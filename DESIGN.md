@@ -151,7 +151,7 @@ Pillole (999px) per i comandi, rettangoli arrotondati 14px per la legenda, 6px p
 Binario 2px teal al 22% con riempimento sfumato teal→corallo e cursore corallo da 14px.
 
 ### Legend
-Scheda 14px con bordo teal 40%, fondo quasi opaco, titolo corallo in Newsreader, righe con tasto teal e descrizione ink.
+Senza contenitore: nessun fondo, bordo o ombra, solo la velatura scura della scena. Titolo bianco in Newsreader, tasti in bianco 600 allineati a destra senza riquadro, descrizioni in ink al 55%. Nessun colore di palette nel pannello.
 
 ### Brand
 Titolo LaLuxes bianco maiuscolo con sottotitolo "Comunità di Pollica" in Hanken bianco, su scrim sfumato.

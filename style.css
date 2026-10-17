@@ -165,13 +165,12 @@ body.ready #topbar { transform: translateY(0); }
 }
 #help-btn {
   width: 34px; height: 34px; flex: none;
-  background: var(--teal-12); border: 1px solid var(--teal-40);
-  border-radius: 50%; color: var(--teal); font-size: .95rem;
-  cursor: pointer; transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.4);
+  border-radius: 50%; color: rgba(255,255,255,.6); font-size: .95rem;
+  cursor: pointer; transition: background .2s, color .2s, border-color .2s;
 }
 #help-btn:hover {
-  background: rgba(255,145,80,.14); color: var(--accent);
-  border-color: rgba(255,145,80,.5); box-shadow: 0 0 16px rgba(255,145,80,.25);
+  background: rgba(255,255,255,.14); color: #fff; border-color: #fff;
 }
 
 /* ── Deck inferiore ── */
@@ -287,13 +286,11 @@ body.zoomed .deck-detail { display: flex; }
 .legend-card {
   position: relative;
   max-width: min(440px, 86vw);
-  background: rgba(8,22,30,.96); border: 1px solid var(--teal-40);
-  border-radius: 14px; padding: 1.6rem 1.8rem;
-  box-shadow: 0 24px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(37,150,190,.08);
+  padding: 1.6rem 1.8rem;
 }
 .legend-close {
   position: absolute; top: 0.55rem; right: 1rem;
-  color: var(--teal); font-size: 1.8rem;
+  color: rgba(255,255,255,.6); font-size: 1.8rem;
   cursor: pointer; background: none; border: none; padding: 0;
   opacity: 0; transition: opacity .3s ease;
 }
@@ -305,24 +302,24 @@ body.zoomed .deck-detail { display: flex; }
   transition: opacity .3s ease .5s;
 }
 .legend-close:hover {
-  color: var(--accent);
+  color: #fff;
 }
 .legend-card h2 {
   font-family: var(--font-display);
   font-size: var(--t-heading-ui); font-weight: 400; letter-spacing: .005em;
-  color: var(--accent); margin-bottom: 1.2rem;
+  color: #fff; margin-bottom: 1.2rem;
   text-align: center;
 }
 .legend-card ul { list-style: none; display: grid; gap: .8rem; }
 .legend-card li {
-  display: flex; align-items: center; gap: .8rem;
-  font-size: var(--t-body-ui); line-height: 1.4; color: var(--ink);
+  display: flex; align-items: center; gap: 1rem;
+  font-size: var(--t-body-ui); line-height: 1.4; color: var(--ink-55);
 }
 .legend-card li b {
-  flex: none; min-width: 5.6rem; text-align: center;
-  padding: .2rem .5rem; border-radius: 6px;
-  background: var(--teal-12); border: 1px solid var(--teal-22);
-  color: var(--teal); font-size: var(--t-key); font-weight: 600; letter-spacing: .06em;
+  flex: none; min-width: 5.6rem; text-align: right;
+  padding: .2rem 0;
+  color: #fff;
+  font-size: var(--t-key); font-weight: 600; letter-spacing: .06em;
 }
 
 /* ── Close button (X angolo) – solo dettaglio mobile ── */
