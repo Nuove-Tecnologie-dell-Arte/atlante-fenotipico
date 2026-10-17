@@ -601,7 +601,6 @@ const phTex = makePlaceholder();
 
 const geo    = new THREE.PlaneGeometry(CFG.IMG_W, CFG.IMG_H);
 const grp    = new THREE.Group();
-const gridTiles = [];  // Contenitori delle copie della griglia
 scene.add(grp);
 
 // Una CARTA = THREE.Group con due piani: fronte (rot.y 0) e retro (rot.y π).
@@ -612,31 +611,38 @@ const planes    = [];   // 226 piani  (caricamento texture)
 // Lookup O(1): meshGrid[row * CFG.COLS + col] → carta (null se la cella è vuota)
 const meshGrid  = new Array(CFG.ROWS * CFG.COLS).fill(null);
 
-// Primo: crea i pannelloni
-for (const pannello of PANNELLONI) {
-  const pw = pannello.cols * CFG.IMG_W;
-  const ph = pannello.rows * CFG.IMG_H;
-  const pGeo = new THREE.PlaneGeometry(pw, ph);
-  const pCard = new THREE.Group();
-  const x = OX + pannello.col * CELL_W + pw / 2;
-  const y = OY - pannello.row * CELL_H - ph / 2;
-  pCard.position.set(x, y, 0);
+// Crea una carta (gruppo fronte+retro), la registra in scena e nei lookup.
+// w/h = dimensioni in celle del piano; extra = campi userData comuni ai due piani e alla carta.
+function makeCard(geometry, w, h, row, col, frontFile, backFile, extra = {}) {
+  const x = OX + col * CELL_W + w / 2;
+  const y = OY - row * CELL_H - h / 2;
+  const card = new THREE.Group();
+  card.position.set(x, y, 0);
 
-  const pFront = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ map: phTex }));
-  const pBack = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ map: phTex }));
-  pBack.rotation.y = Math.PI;
-  pBack.visible = false;   // retro pannellone: mai mostrato
+  const front = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: phTex }));
+  const back  = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: phTex }));
+  back.rotation.y = Math.PI;
+  back.visible = false;   // retro mostrato solo a carta aperta (dimezza i draw call)
 
-  pFront.userData = { card: pCard, file: -1, side: 'front', isPannellone: true, name: pannello.name };
-  pBack.userData = { card: pCard, file: -1, side: 'back', isPannellone: true, name: pannello.name };
+  front.userData = { card, file: frontFile, side: 'front', ...extra };
+  back.userData  = { card, file: backFile,  side: 'back',  ...extra };
 
-  pCard.add(pFront); pCard.add(pBack);
-  pCard.userData = { row: pannello.row, col: pannello.col, flip: 0, planes: [pFront, pBack], isPannellone: true, name: pannello.name, baseX: x };
+  card.add(front, back);
+  card.userData = { row, col, flip: 0, planes: [front, back], baseX: x, ...extra };
 
-  grp.add(pCard);
-  cards.push(pCard);
-  planes.push(pFront, pBack);
-  meshGrid[pannello.row * CFG.COLS + pannello.col] = pCard;
+  grp.add(card);
+  cards.push(card);
+  planes.push(front, back);
+  meshGrid[row * CFG.COLS + col] = card;
+}
+
+// Primo: crea i pannelloni (retro mai mostrato)
+for (const p of PANNELLONI) {
+  makeCard(
+    new THREE.PlaneGeometry(p.cols * CFG.IMG_W, p.rows * CFG.IMG_H),
+    p.cols * CFG.IMG_W, p.rows * CFG.IMG_H, p.row, p.col, -1, -1,
+    { isPannellone: true, name: p.name }
+  );
 }
 
 // Secondo: raccogli le posizioni disponibili (non occupate da pannelloni)
@@ -651,31 +657,8 @@ for (let row = 0; row < CFG.ROWS; row++) {
 
 // Terzo: crea carte solo per i soggetti disponibili (resto rimane vuoto)
 for (let i = 0; i < Math.min(CFG.NUM_SUBJECTS, availablePositions.length); i++) {
-  const pos = availablePositions[i];
-  const row = pos.row;
-  const col = pos.col;
-  const x = OX + col * CELL_W + CFG.IMG_W / 2;
-  const y = OY - row * CELL_H - CFG.IMG_H / 2;
-
-  const card  = new THREE.Group();
-  card.position.set(x, y, 0);
-
-  const front = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: phTex }));
-  const back  = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: phTex }));
-  back.rotation.y = Math.PI;
-  back.visible = false;   // retro mostrato solo a carta aperta (dimezza i draw call)
-
-  const subjectIdx = i;
-  front.userData = { card, file: subjectIdx * 2 + 1, side: 'front' };
-  back.userData  = { card, file: subjectIdx * 2 + 2, side: 'back'  };
-
-  card.add(front); card.add(back);
-  card.userData = { row, col, flip: 0, planes: [front, back], baseX: x };
-
-  grp.add(card);
-  cards.push(card);
-  planes.push(front, back);
-  meshGrid[row * CFG.COLS + col] = card;
+  const { row, col } = availablePositions[i];
+  makeCard(geo, CFG.IMG_W, CFG.IMG_H, row, col, i * 2 + 1, i * 2 + 2);
 }
 
 // Helper: applica un'azione a entrambi i piani di una carta.
