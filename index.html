@@ -649,6 +649,7 @@ for (const pannello of PANNELLONI) {
   const pFront = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ map: phTex }));
   const pBack = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ map: phTex }));
   pBack.rotation.y = Math.PI;
+  pBack.visible = false;   // retro pannellone: mai mostrato
 
   pFront.userData = { card: pCard, file: -1, side: 'front', isPannellone: true, name: pannello.name };
   pBack.userData = { card: pCard, file: -1, side: 'back', isPannellone: true, name: pannello.name };
@@ -686,6 +687,7 @@ for (let i = 0; i < Math.min(CFG.NUM_SUBJECTS, availablePositions.length); i++) 
   const front = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: phTex }));
   const back  = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: phTex }));
   back.rotation.y = Math.PI;
+  back.visible = false;   // retro mostrato solo a carta aperta (dimezza i draw call)
 
   const subjectIdx = i;
   front.userData = { card, file: subjectIdx * 2 + 1, side: 'front' };
@@ -886,11 +888,8 @@ let velY = 0;   // inerzia verticale
 // Marquee ("tapis roulant"): scorrimento orizzontale infinito attivato/fermato con S.
 let marqueeActive = false;
 let marqueeOffset = 0;   // spostamento accumulato in unità mondo
-let marqueeEaseInTime = 0;   // tempo di inizio dell'ease-in
-let marqueeEaseOutTime = 0;  // tempo di inizio dell'ease-out (se != 0 è in fase di ease-out)
-let marqueeStopping = false;  // rimane true per un breve periodo dopo ease-out per evitare glitch
+let marqueeT = 0;        // 0 = fermo … 1 = a regime; si avvicina a marqueeActive in MARQUEE_EASE_DURATION
 const MARQUEE_EASE_DURATION = 0.5;   // durata ease in/out in secondi
-const MARQUEE_STOP_BUFFER = 0.1;     // buffer di ripresa dopo ease-out (secondi)
 
 // Funzione di easing: ease in-out quadratica
 function easeInOutQuad(t) {
@@ -1005,6 +1004,21 @@ function releaseFullRes(card) {
   }
 }
 
+// Avvia il rientro in griglia di una carta (z=0, fronte). Se un'altra carta stava
+// ancora rientrando, la chiude subito: returningMesh ne tiene una sola.
+function startReturn(card) {
+  if (returningMesh && returningMesh !== card) finishReturn(returningMesh);
+  card.userData.flip = 0;
+  returningMesh = card;
+}
+function finishReturn(card) {
+  card.position.z = 0;
+  card.rotation.y = 0;
+  card.userData.planes[1].visible = false;   // il retro torna nascosto
+  releaseFullRes(card);                      // libera la VRAM del full-res
+  if (returningMesh === card) returningMesh = null;
+}
+
 function zoomTo(mesh) {
   if (!savedCam) {
     savedCam = { x: camTargetX, y: camTargetY, z: camTargetZ };
@@ -1019,10 +1033,11 @@ function zoomTo(mesh) {
   hoveredMesh = null;
 
   // La vecchia carta attiva torna a z=0 (e si rigira sul fronte)
-  if (zoomedMesh && zoomedMesh !== mesh) { zoomedMesh.userData.flip = 0; returningMesh = zoomedMesh; }
+  if (zoomedMesh && zoomedMesh !== mesh) { startReturn(zoomedMesh); }
 
   zoomedMesh = mesh;
   mesh.userData.flip = 0;          // si apre sempre sul fronte (presentazione)
+  if (!mesh.userData.isPannellone) mesh.userData.planes[1].visible = true;
   loadBackThumb(mesh);             // miniatura retro on-demand (se non ancora caricata)
   loadFullRes(mesh);               // precarica fronte + retro full-res
   camTargetX = mesh.position.x;
@@ -1045,7 +1060,7 @@ function unzoom() {
   // Pulisci anche l'hover residuo
   clearHoverMesh(hoveredMesh);
   hoveredMesh = null;
-  if (zoomedMesh) { zoomedMesh.userData.flip = 0; returningMesh = zoomedMesh; }
+  if (zoomedMesh) { startReturn(zoomedMesh); }
   zoomedMesh = null;
   dimmingActive = true;
   setCanvasCursor('grab');
@@ -1083,15 +1098,12 @@ function startMarquee() {
   velX = 0; velY = 0;
   // Mantiene marqueeOffset per continuare da dove si era fermato
   marqueeActive = true;
-  marqueeEaseInTime = performance.now() / 1000;
-  marqueeEaseOutTime = 0;   // cancella qualsiasi ease-out precedente
   setCanvasCursor('grab');
   syncMarqueeBtn();
 }
 
 function stopMarquee() {
   marqueeActive = false;
-  marqueeEaseOutTime = performance.now() / 1000;   // inizia l'ease-out
   syncMarqueeBtn();
 }
 
@@ -1299,8 +1311,7 @@ canvas.addEventListener('touchmove', (e) => {
       savedCam = null;
       clearHoverMesh(hoveredMesh);
       hoveredMesh = null;
-      zoomedMesh.userData.flip = 0;
-      returningMesh = zoomedMesh;
+      startReturn(zoomedMesh);
       zoomedMesh = null;
       dimmingActive = true;
       setCanvasCursor('grab');
@@ -1384,8 +1395,7 @@ canvas.addEventListener('wheel', (e) => {
       savedCam = null;                    // scarta il punto di ritorno salvato
       clearHoverMesh(hoveredMesh);
       hoveredMesh = null;
-      zoomedMesh.userData.flip = 0;       // rientra sul fronte
-      returningMesh = zoomedMesh;
+      startReturn(zoomedMesh);            // rientra sul fronte
       zoomedMesh = null;
       dimmingActive = true;
       setCanvasCursor('grab');
@@ -1659,43 +1669,12 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   /* ── Marquee ("tapis roulant"): scorrimento orizzontale infinito ── */
-  let marqueeSpeed = CFG.MARQUEE_SPEED;
-  
-  // Calcola il fattore di easing (ease-in o ease-out)
-  if (marqueeActive && marqueeEaseInTime > 0) {
-    const elapsedEaseIn = (performance.now() / 1000) - marqueeEaseInTime;
-    if (elapsedEaseIn < MARQUEE_EASE_DURATION) {
-      const t = elapsedEaseIn / MARQUEE_EASE_DURATION;
-      marqueeSpeed *= easeInOutQuad(t);
-    } else {
-      marqueeEaseInTime = 0;  // ease-in completato
-    }
-  }
-  
-  // Ease-out quando si ferma
-  if (marqueeEaseOutTime > 0 && !marqueeActive) {
-    const elapsedEaseOut = (performance.now() / 1000) - marqueeEaseOutTime;
-    if (elapsedEaseOut < MARQUEE_EASE_DURATION) {
-      const t = elapsedEaseOut / MARQUEE_EASE_DURATION;
-      marqueeSpeed = CFG.MARQUEE_SPEED * easeInOutQuad(1 - t);  // inverso: da 1 a 0
-    } else {
-      marqueeEaseOutTime = 0;  // ease-out completato
-      marqueeStopping = true;  // inizia il buffer di stop
-    }
-  }
-  
-  // Buffer di stop: mantiene il marquee fermo brevemente dopo ease-out per evitare glitch
-  if (marqueeStopping) {
-    if ((performance.now() / 1000) - marqueeEaseOutTime < MARQUEE_STOP_BUFFER) {
-      marqueeSpeed = 0;  // velocità 0 durante il buffer
-    } else {
-      marqueeStopping = false;  // buffer completato
-    }
-  }
-  
-  // Applica la velocità (con easing se in fase di ease in/out)
-  if (marqueeActive || marqueeEaseOutTime > 0 || marqueeStopping) {
-    marqueeOffset += marqueeSpeed * dt;
+  // marqueeT sale/scende linearmente verso 1/0; l'easing dà la rampa di velocità.
+  const mStep = dt / MARQUEE_EASE_DURATION;
+  marqueeT = marqueeActive ? Math.min(1, marqueeT + mStep) : Math.max(0, marqueeT - mStep);
+  const marqueeMoving = marqueeT > 0;
+  if (marqueeMoving) {
+    marqueeOffset += CFG.MARQUEE_SPEED * easeInOutQuad(marqueeT) * dt;
     // Wrap modulo GRID_W: la griglia contigua piastrella senza cuciture visibili.
     for (const c of cards) {
       c.position.x = ((c.userData.baseX - OX - marqueeOffset) % GRID_W + GRID_W) % GRID_W + OX;
@@ -1703,7 +1682,7 @@ function animate() {
   }
 
   /* ── Frecce tastiera (solo navigazione normale) ── */
-  if (!zoomedMesh && !marqueeActive && !marqueeStopping) {
+  if (!zoomedMesh && !marqueeActive) {
     if (KEYS['ArrowLeft']  || KEYS['a'])
       camTargetX = clampX(camTargetX - CFG.NAV_STEP * 60 * dt);
     if (KEYS['ArrowRight'] || KEYS['d'])
@@ -1715,7 +1694,7 @@ function animate() {
   }
 
   /* ── Inerzia drag (solo navigazione normale) — frame-rate independent ── */
-  if (!dragging && !zoomedMesh && !marqueeActive && !marqueeStopping) {
+  if (!dragging && !zoomedMesh && !marqueeActive) {
     const decay = Math.pow(CFG.INERTIA, dt * 60);
     velX      *= decay;
     velY      *= decay;
@@ -1736,7 +1715,7 @@ function animate() {
   /* ── Fluttuazione verticale (solo normale; ferma in zoom e in marquee) ── */
   const floatValue = Math.sin(clock.elapsedTime * Math.PI * 2 * CFG.FLOAT_SPD) * CFG.FLOAT_AMP;
   
-  if (!zoomedMesh && !marqueeActive && !marqueeStopping && marqueeEaseOutTime === 0) {
+  if (!zoomedMesh && !marqueeMoving) {
     // Lerpa verso il valore attuale dell'oscillazione per una transizione fluida
     grp.position.y = lerp(grp.position.y, floatValue, 0.1);
   } else {
@@ -1782,10 +1761,7 @@ function animate() {
     returningMesh.position.z = lerp(returningMesh.position.z, 0, 0.14);
     returningMesh.rotation.y = lerp(returningMesh.rotation.y, 0, 0.16);
     if (Math.abs(returningMesh.position.z) < 0.001 && Math.abs(returningMesh.rotation.y) < 0.01) {
-      returningMesh.position.z = 0;
-      returningMesh.rotation.y = 0;
-      releaseFullRes(returningMesh);   // libera la VRAM del full-res
-      returningMesh = null;
+      finishReturn(returningMesh);
     }
   }
 
