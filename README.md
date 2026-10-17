@@ -14,6 +14,8 @@ python3 -m http.server 8000
 
 Poi apri <http://localhost:8000>. Va bene anche `npx http-server .` (porta 8080).
 
+Per il ricaricamento automatico a ogni salvataggio: `npm run dev` (usa `live-server`, si apre da solo il browser).
+
 ## Come si usa
 
 | Azione | Effetto |
