@@ -451,10 +451,6 @@ const CFG = {
   LERP_NAV  : 0.10, // smoothing navigazione normale
   LERP_ZOOM : 0.055,// smoothing animazione zoom (più cinematico)
 
-  // Caricamento
-  BATCH_SIZE: 16,
-  BATCH_MS  : 40,
-
   // Effetti
   FLOAT_AMP : 0.035,// ampiezza fluttuazione verticale
   FLOAT_SPD : 0.38, // Hz
@@ -676,7 +672,15 @@ const COLOR_DIM  = new THREE.Color(0.28, 0.28, 0.28);
 const texLoader  = new THREE.TextureLoader();
 const ldInfo     = document.getElementById('ld-info');
 const ldProgressRect = document.getElementById('progress-rect');
-let   loadedN    = 0;
+// Le miniature di avvio passano da un LoadingManager dedicato (progress + fine caricamento);
+// i caricamenti on-demand (full-res, retri) usano texLoader senza manager.
+const loadMgr     = new THREE.LoadingManager();
+const thumbLoader = new THREE.TextureLoader(loadMgr);
+loadMgr.onProgress = (url, loaded, total) => {
+  if (ldProgressRect) ldProgressRect.setAttribute('width', (1000 * loaded / total).toFixed(0));
+  ldInfo.textContent = loaded + ' / ' + total;
+};
+loadMgr.onLoad = () => setTimeout(hideLoading, 300);
 function onTexDone(plane, tex, url) {
   if (tex) {
     // Disabilita mipmap per le miniature: risparmia ~33% VRAM (100MB → 100MB senza overhead)
@@ -686,18 +690,12 @@ function onTexDone(plane, tex, url) {
     plane.material.needsUpdate = true;
     // Su desktop: pre-upload immediato per evitare jank allo scroll.
     // Su mobile: upload lazy (al primo render visibile) per non bloccare il main thread
-    // durante il batch-load delle 226 miniature.
+    // durante il caricamento iniziale delle miniature.
     if (!isMobile) renderer.initTexture(tex);
     plane.userData.thumbTex = tex;   // miniatura: resta in memoria, riusata al de-zoom
   } else {
     console.warn('[AtlanteFen] Immagine non caricata:', url);   // resta il placeholder neutro
   }
-  loadedN++;
-  if (ldProgressRect) {
-    ldProgressRect.setAttribute('width', (1000 * loadedN / LOAD_COUNT).toFixed(0));
-  }
-  ldInfo.textContent = loadedN + ' / ' + LOAD_COUNT;
-  if (loadedN >= LOAD_COUNT) setTimeout(hideLoading, 300);
 }
 
 function hideLoading() {
@@ -712,43 +710,28 @@ function hideLoading() {
   setTimeout(() => { toggleLegend(true); }, 400);
 }
 
-function loadBatch(start) {
-  const end = Math.min(start + CFG.BATCH_SIZE, planes.length);
-  for (let i = start; i < end; i++) {
-    const p = planes[i];
+// Carica all'avvio solo i fronti: 113 carte singole + 4 pannelloni.
+// I retri delle carte singole sono on-demand; quelli dei pannelloni non vengono mai mostrati.
+function loadThumbs() {
+  for (const p of planes) {
+    if (p.userData.side !== 'front') continue;
     let url;
-
-    if (p.userData.isPannellone && p.userData.side === 'back') {
-      // Retro pannellone: mai visibile (pannelloni non sono zoomabili né girabili)
-      continue;
-    } else if (p.userData.isPannellone) {
-      // Pannellone fronte: usa la miniatura 1/8 (da ~96-191 MB a ~1.5-3 MB VRAM)
+    if (p.userData.isPannellone) {
+      // Pannellone: miniatura 1/8 (da ~96-191 MB a ~1.5-3 MB VRAM)
       const pannello = PANNELLONI.find(pn => pn.name === p.userData.name);
       url = `thumbs/pannelloni/${p.userData.name} ${pannello.cols}x${pannello.rows}.jpg`;
-    } else if (p.userData.side === 'back') {
-      // Retro carta singola: caricato on-demand alla prima apertura (risparmia ~52 MB VRAM)
-      continue;
     } else {
-      // Carta singola
       url = thumbSrcN(p.userData.file);
     }
-
-    texLoader.load(
+    thumbLoader.load(
       url,
       (tex) => onTexDone(p, tex, url),
       undefined,
       ()    => onTexDone(p, null, url)
     );
   }
-  if (end < planes.length) setTimeout(() => loadBatch(end), CFG.BATCH_MS);
 }
-
-// Quante texture vengono caricate all'avvio:
-// fronti carte singole (113) + fronti pannelloni (4).
-// I retri carte singole sono on-demand; i retri pannelloni non vengono mai mostrati.
-const LOAD_COUNT = planes.filter(p => p.userData.side === 'front').length;
-
-loadBatch(0);
+loadThumbs();
 
 /* ══════════════════════════════════════════════════════════════
    Stato camera
