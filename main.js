@@ -1,0 +1,1246 @@
+import * as THREE from 'three';
+
+/* ══════════════════════════════════════════════════════════════
+   CONFIG
+   ══════════════════════════════════════════════════════════════ */
+const CFG = {
+  // Una CELLA = un SOGGETTO = una carta fronte-retro.
+  // 113 soggetti (226 immagini / 2) + pannelloni su griglia 15×10 = 150 celle.
+  COLS : 15,
+  ROWS : 10,
+
+  // Immagini totali in images/ e soggetti (coppie fronte+retro).
+  TOTAL_IMGS  : 226,
+  NUM_SUBJECTS: 113,   // = TOTAL_IMGS / 2
+
+  // Adatta IMG_W / IMG_H al rapporto esatto delle tue immagini
+  // Esempi:  4:3 → 1.6 / 1.2   |  1:1 → 1.2 / 1.2   |  3:4 → 1.2 / 1.6
+  IMG_W : 2,
+  IMG_H : 1,
+
+  // ZERO spaziatura
+  GAP_X : 0,
+  GAP_Y : 0,
+
+  // Percorso immagini
+  PATH : 'images/',
+  EXT  : '.webp',
+  // Miniature (griglia): caricate all'avvio al posto del full-res.
+  // Il full-res 1920×960 si carica solo quando un'immagine viene ingrandita.
+  THUMB_PATH : 'thumbs/',
+  THUMB_EXT  : '.jpg',
+  // Nomi file: 001.webp … 226.webp (3 cifre, zero-pad).
+  // Mappatura cella → soggetto (riga-major): subjectAt = row*COLS + col.
+  // Per ogni soggetto s: fronte = 2s+1 (dispari), retro = 2s+2 (pari).
+  //   Cella (0,0) → soggetto 0 → fronte 001 / retro 002
+  //   Cella (0,1) → soggetto 1 → fronte 003 / retro 004 …
+
+  // Camera
+  CAM_Z    :  5,    // distanza iniziale (centro tra GRID_MIN e MAX)
+  CAM_FOV  : 55,    // FOV verticale (°)
+  CAM_Z_MIN: 0.4,   // limite zoom in (per dettaglio)
+  CAM_Z_MAX: 6,   // limite zoom out (griglia più stretta)
+  CAM_Z_GRID_MIN: 4,  // limite zoom in griglia (griglia più allargata)
+
+  // Navigazione
+  NAV_STEP  : 0.25, // passo pulsanti freccia
+  INERTIA   : 0.87, // inerzia drag
+  LERP_NAV  : 0.10, // smoothing navigazione normale
+  LERP_ZOOM : 0.055,// smoothing animazione zoom (più cinematico)
+
+  // Effetti
+  FLOAT_AMP : 0.035,// ampiezza fluttuazione verticale
+  FLOAT_SPD : 0.38, // Hz
+  HOVER_SCL : 1.05, // scala hover
+
+  // Marquee ("tapis roulant"): velocità di scorrimento orizzontale in unità mondo/sec.
+  // Moderata: una carta (IMG_W) attraversa lo schermo in qualche secondo.
+  MARQUEE_SPEED : 1.2,
+};
+
+
+// Rilevamento dispositivo mobile
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+// Pannelloni: distribuiti nella griglia
+const PANNELLONI = [
+  { name: 'dovesihannoipiedi', cols: 2, rows: 4, row: 0, col: 0 },
+  { name: 'ognitanto', cols: 2, rows: 2, row: 0, col: 6 },
+  { name: 'perandarevia', cols: 2, rows: 2, row: 3, col: 11 },
+  { name: 'unmondopossibile', cols: 2, rows: 2, row: 4, col: 4 }
+];
+
+// Mappa celle occupate da pannelloni
+function isPannelloneCell(row, col) {
+  for (const p of PANNELLONI) {
+    if (row >= p.row && row < p.row + p.rows && col >= p.col && col < p.col + p.cols) {
+      return p;
+    }
+  }
+  return null;
+}
+
+// Verifica se è la cella principale (top-left) di un pannellone
+function getPannelloneAtCell(row, col) {
+  return PANNELLONI.find(p => p.row === row && p.col === col) || null;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Utility
+   ══════════════════════════════════════════════════════════════ */
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// Lerp frame-rate independent: t è la fraction nominale a 60 fps,
+// dt è il delta reale in secondi. Evita che la camera sia troppo
+// reattiva a 144 Hz e troppo lenta a 30 Hz.
+function lerpDt(a, b, t60, dt) {
+  const alpha = 1 - Math.pow(1 - t60, dt * 60);
+  return lerp(a, b, alpha);
+}
+
+// Flag per il dimming: true mentre c'è uno zoom attivo o la transizione
+// verso COLOR_FULL non è ancora completata. Evita 226 lerp inutili a frame.
+let dimmingActive = false;
+
+// Cella (row,col) → indice soggetto (riga-major).
+function subjectAt(row, col) { return row * CFG.COLS + col; }
+// Numeri file della carta: fronte = 2s+1 (presentazione), retro = 2s+2 (identikit).
+function frontNum(row, col) { return subjectAt(row, col) * 2 + 1; }
+function backNum (row, col) { return subjectAt(row, col) * 2 + 2; }
+
+// Percorsi/label a partire da un numero file.
+function pad3(n)      { return String(n).padStart(3, '0'); }
+function imgSrcN(n)   { return CFG.PATH       + pad3(n) + CFG.EXT; }
+function thumbSrcN(n) { return CFG.THUMB_PATH + pad3(n) + CFG.THUMB_EXT; }
+function imgLabelN(n) { return pad3(n); }
+
+/* ══════════════════════════════════════════════════════════════
+   Three.js — Renderer, Scene, Camera
+   ══════════════════════════════════════════════════════════════ */
+const canvas   = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: !isMobile,                                        // MSAA off su mobile: risparmia 20-40 MB VRAM
+  powerPreference: isMobile ? 'default' : 'high-performance'  // evita throttling termico su smartphone
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
+
+// Gestione perdita contesto WebGL (tipica su mobile in OOM): ricarica la pagina.
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  document.body.innerHTML =
+    '<div style="position:fixed;inset:0;background:#06141b;display:flex;' +
+    'align-items:center;justify-content:center;color:#eafbff;font-family:system-ui;' +
+    'text-align:center;padding:2rem"><div>' +
+    '<p style="font-size:1.1rem;margin-bottom:1rem">Errore grafico</p>' +
+    '<p style="font-size:.8rem;opacity:.6">Tocca per ricaricare</p>' +
+    '</div></div>';
+  document.addEventListener('click',    () => location.reload(), { once: true });
+  document.addEventListener('touchend', () => location.reload(), { once: true });
+}, false);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x06141b, 1);
+
+const scene = new THREE.Scene();
+scene.fog   = new THREE.Fog(0x06141b, 45, 110);
+
+const camera = new THREE.PerspectiveCamera(
+  CFG.CAM_FOV, window.innerWidth / window.innerHeight, 0.1, 200
+);
+camera.position.set(0, 0, CFG.CAM_Z);
+
+/* ══════════════════════════════════════════════════════════════
+   Particelle di sfondo
+   ══════════════════════════════════════════════════════════════ */
+(function buildParticles() {
+  const N = 2000, pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    pos[i*3]   = (Math.random()-.5)*260;
+    pos[i*3+1] = (Math.random()-.5)* 60;
+    pos[i*3+2] = -(Math.random()*70 + 8);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({
+    color:0x2596be, size:0.04, transparent:true, opacity:0.38, sizeAttenuation:true
+  })));
+})();
+
+/* ══════════════════════════════════════════════════════════════
+   Griglia — ZERO gap, tutte le immagini allo stesso z
+   ══════════════════════════════════════════════════════════════ */
+// Con GAP = 0: CELL = IMG, griglia perfettamente contigua
+const CELL_W = CFG.IMG_W;   // = IMG_W + 0
+const CELL_H = CFG.IMG_H;   // = IMG_H + 0
+const GRID_W = CFG.COLS * CELL_W;
+const GRID_H = CFG.ROWS * CELL_H;
+const OX     = -GRID_W / 2;   // bordo sinistro della griglia
+const OY     =  GRID_H / 2;   // bordo superiore della griglia
+
+// Placeholder: rettangolo scuro con bordo sottile
+function makePlaceholder() {
+  const w = 32, h = Math.round(32 * CFG.IMG_H / CFG.IMG_W);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#08161d';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(37,150,190,.25)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(.5, .5, w-1, h-1);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const phTex = makePlaceholder();
+
+const geo    = new THREE.PlaneGeometry(CFG.IMG_W, CFG.IMG_H);
+const grp    = new THREE.Group();
+scene.add(grp);
+
+// Una CARTA = THREE.Group con due piani: fronte (rot.y 0) e retro (rot.y π).
+// Con backface culling (side: FrontSide) a rotazione 0 si vede solo il fronte,
+// a rotazione π solo il retro (orientato correttamente, non specchiato).
+const cards     = [];   // 113 gruppi (hover/zoom/navigazione)
+const planes    = [];   // 226 piani  (caricamento texture)
+// Lookup O(1): meshGrid[row * CFG.COLS + col] → carta (null se la cella è vuota)
+const meshGrid  = new Array(CFG.ROWS * CFG.COLS).fill(null);
+
+// Crea una carta (gruppo fronte+retro), la registra in scena e nei lookup.
+// w/h = dimensioni in celle del piano; extra = campi userData comuni ai due piani e alla carta.
+function makeCard(geometry, w, h, row, col, frontFile, backFile, extra = {}) {
+  const x = OX + col * CELL_W + w / 2;
+  const y = OY - row * CELL_H - h / 2;
+  const card = new THREE.Group();
+  card.position.set(x, y, 0);
+
+  const front = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: phTex }));
+  const back  = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: phTex }));
+  back.rotation.y = Math.PI;
+  back.visible = false;   // retro mostrato solo a carta aperta (dimezza i draw call)
+
+  front.userData = { card, file: frontFile, side: 'front', ...extra };
+  back.userData  = { card, file: backFile,  side: 'back',  ...extra };
+
+  card.add(front, back);
+  card.userData = { row, col, flip: 0, planes: [front, back], baseX: x, ...extra };
+
+  grp.add(card);
+  cards.push(card);
+  planes.push(front, back);
+  meshGrid[row * CFG.COLS + col] = card;
+}
+
+// Primo: crea i pannelloni (retro mai mostrato)
+for (const p of PANNELLONI) {
+  makeCard(
+    new THREE.PlaneGeometry(p.cols * CFG.IMG_W, p.rows * CFG.IMG_H),
+    p.cols * CFG.IMG_W, p.rows * CFG.IMG_H, p.row, p.col, -1, -1,
+    { isPannellone: true, name: p.name }
+  );
+}
+
+// Secondo: raccogli le posizioni disponibili (non occupate da pannelloni)
+const availablePositions = [];
+for (let row = 0; row < CFG.ROWS; row++) {
+  for (let col = 0; col < CFG.COLS; col++) {
+    if (!isPannelloneCell(row, col)) {
+      availablePositions.push({ row, col });
+    }
+  }
+}
+
+// Terzo: crea carte solo per i soggetti disponibili (resto rimane vuoto)
+for (let i = 0; i < Math.min(CFG.NUM_SUBJECTS, availablePositions.length); i++) {
+  const { row, col } = availablePositions[i];
+  makeCard(geo, CFG.IMG_W, CFG.IMG_H, row, col, i * 2 + 1, i * 2 + 2);
+}
+
+// Helper: applica un'azione a entrambi i piani di una carta.
+function cardRenderOrder(card, n) { for (const p of card.userData.planes) p.renderOrder = n; }
+
+/* ── Colori per il dimming dei mesh non attivi ── */
+// MeshBasicMaterial moltiplica texture × color, quindi:
+//   color (1,1,1) = piena luminosità   |   color (0.3,0.3,0.3) = scurito al 30%
+const COLOR_FULL = new THREE.Color().setRGB(1.0, 1.0, 1.0, THREE.SRGBColorSpace);
+const COLOR_DIM  = new THREE.Color().setRGB(0.28, 0.28, 0.28, THREE.SRGBColorSpace);
+
+/* ══════════════════════════════════════════════════════════════
+   Caricamento texture
+   ══════════════════════════════════════════════════════════════ */
+const texLoader  = new THREE.TextureLoader();
+const ldInfo     = document.getElementById('ld-info');
+const ldProgressRect = document.getElementById('progress-rect');
+// Le miniature di avvio passano da un LoadingManager dedicato (progress + fine caricamento);
+// i caricamenti on-demand (full-res, retri) usano texLoader senza manager.
+const loadMgr     = new THREE.LoadingManager();
+const thumbLoader = new THREE.TextureLoader(loadMgr);
+loadMgr.onProgress = (url, loaded, total) => {
+  if (ldProgressRect) ldProgressRect.setAttribute('width', (1000 * loaded / total).toFixed(0));
+  ldInfo.textContent = loaded + ' / ' + total;
+};
+loadMgr.onLoad = () => setTimeout(hideLoading, 300);
+function onTexDone(plane, tex, url) {
+  if (tex) {
+    // Disabilita mipmap per le miniature: risparmia ~33% VRAM (100MB → 100MB senza overhead)
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    plane.material.map = tex;
+    plane.material.needsUpdate = true;
+    // Su desktop: pre-upload immediato per evitare jank allo scroll.
+    // Su mobile: upload lazy (al primo render visibile) per non bloccare il main thread
+    // durante il caricamento iniziale delle miniature.
+    if (!isMobile) renderer.initTexture(tex);
+    plane.userData.thumbTex = tex;   // miniatura: resta in memoria, riusata al de-zoom
+  } else {
+    console.warn('[AtlanteFen] Immagine non caricata:', url);   // resta il placeholder neutro
+  }
+}
+
+function hideLoading() {
+  const el = document.getElementById('loading');
+  el.classList.add('fade-out');
+  document.body.classList.add('ready');           // fa entrare topbar + deck
+  setTimeout(() => { el.style.display = 'none'; }, 950);
+  // Intro pull-back
+  camera.position.z = CFG.CAM_Z + 3;
+  camTargetZ = CFG.CAM_Z;
+  // Mostra la legenda all'avvio con delay
+  setTimeout(() => { toggleLegend(true); }, 400);
+}
+
+// Carica all'avvio solo i fronti: 113 carte singole + 4 pannelloni.
+// I retri delle carte singole sono on-demand; quelli dei pannelloni non vengono mai mostrati.
+function loadThumbs() {
+  for (const p of planes) {
+    if (p.userData.side !== 'front') continue;
+    let url;
+    if (p.userData.isPannellone) {
+      // Pannellone: miniatura 1/8 (da ~96-191 MB a ~1.5-3 MB VRAM)
+      const pannello = PANNELLONI.find(pn => pn.name === p.userData.name);
+      url = `thumbs/pannelloni/${p.userData.name} ${pannello.cols}x${pannello.rows}.jpg`;
+    } else {
+      url = thumbSrcN(p.userData.file);
+    }
+    thumbLoader.load(
+      url,
+      (tex) => onTexDone(p, tex, url),
+      undefined,
+      ()    => onTexDone(p, null, url)
+    );
+  }
+}
+loadThumbs();
+
+/* ══════════════════════════════════════════════════════════════
+   Stato camera
+   ══════════════════════════════════════════════════════════════ */
+let camTargetX = 0;
+let camTargetY = 0;
+let camTargetZ = CFG.CAM_Z;
+let velX = 0;   // inerzia orizzontale
+let velY = 0;   // inerzia verticale
+
+// Marquee ("tapis roulant"): scorrimento orizzontale infinito attivato/fermato con S.
+let marqueeActive = false;
+let marqueeOffset = 0;   // spostamento accumulato in unità mondo
+let marqueeT = 0;        // 0 = fermo … 1 = a regime; si avvicina a marqueeActive in MARQUEE_EASE_DURATION
+const MARQUEE_EASE_DURATION = 0.5;   // durata ease in/out in secondi
+
+// Funzione di easing: ease in-out quadratica
+function easeInOutQuad(t) {
+  // t è nel range [0, 1]
+  return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Limiti orizzontali (X).
+   Il clamp usa il z TARGET per avere limiti corretti anche
+   durante l'animazione di zoom.
+   ────────────────────────────────────────────────────────────── */
+function halfViewX(z) {
+  z = (z !== undefined) ? z : camTargetZ;
+  return Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.abs(z) * camera.aspect;
+}
+function halfViewY(z) {
+  z = (z !== undefined) ? z : camTargetZ;
+  return Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.abs(z);
+}
+function clampX(x, z) {
+  const hv = halfViewX(z);
+  const mn = OX       + hv;
+  const mx = OX + GRID_W - hv;
+  if (mn > mx) return 0;
+  return Math.max(mn, Math.min(mx, x));
+}
+function clampY(y, z) {
+  const halfH = halfViewY(z);   // halfViewY usa camTargetZ se z è undefined → niente NaN
+  const mn = -GRID_H/2 + halfH;
+  const mx =  GRID_H/2 - halfH;
+  if (mn > mx) return 0;
+  return Math.max(mn, Math.min(mx, y));
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Zoom su immagine (3D — nessun lightbox)
+   ══════════════════════════════════════════════════════════════ */
+let zoomedMesh    = null;   // mesh attualmente ingrandita
+let returningMesh = null;   // mesh che sta tornando a z=0 dopo un de-zoom
+let savedCam      = null;   // stato camera prima dello zoom
+
+function fitZForMesh() {
+  // z a cui l'immagine riempie lo schermo (contain)
+  const halfV  = THREE.MathUtils.degToRad(camera.fov / 2);
+  const halfH  = Math.atan(Math.tan(halfV) * camera.aspect);
+  const zForH  = (CFG.IMG_H / 2) / Math.tan(halfV);
+  const zForW  = (CFG.IMG_W / 2) / Math.tan(halfH);
+  return Math.max(zForH, zForW) + 0.08;  // piccolo offset anti z-fight
+}
+
+// ── Full-res on demand ─────────────────────────────────────────
+// La griglia mostra le miniature; il full-res 1920×960 (~7 MB) si carica solo
+// per la carta aperta (fronte + retro) e si libera quando torna in griglia.
+function loadPlaneFull(plane) {
+  if (plane.userData.fullTex || plane.userData.fullLoading) return;
+  plane.userData.fullLoading = true;
+  texLoader.load(
+    imgSrcN(plane.userData.file),
+    (tex) => {
+      plane.userData.fullLoading = false;
+      // Se la carta non è più quella aperta, scarta subito.
+      if (plane.userData.card !== zoomedMesh) { tex.dispose(); return; }
+      tex.colorSpace = THREE.SRGBColorSpace;
+      plane.userData.fullTex = tex;
+      plane.material.map = tex;
+      plane.material.needsUpdate = true;
+      renderer.initTexture(tex);
+    },
+    undefined,
+    () => { plane.userData.fullLoading = false; }  // resta la miniatura
+  );
+}
+function loadFullRes(card) {
+  if (!card || !card.userData.planes) return;
+  for (const plane of card.userData.planes) loadPlaneFull(plane);  // fronte + retro
+}
+
+// Carica la miniatura del retro on-demand (solo alla prima apertura della carta).
+// I retri non vengono caricati all'avvio per risparmiare ~52 MB VRAM.
+function loadBackThumb(card) {
+  if (!card || !card.userData.planes) return;
+  const back = card.userData.planes[1];
+  if (!back || back.userData.isPannellone || back.userData.thumbTex || back.userData.thumbLoading) return;
+  back.userData.thumbLoading = true;
+  texLoader.load(
+    thumbSrcN(back.userData.file),
+    (tex) => {
+      back.userData.thumbLoading = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+      back.userData.thumbTex = tex;
+      // Aggiorna la map solo se il retro non sta già mostrando il full-res
+      if (!back.userData.fullTex) {
+        back.material.map = tex;
+        back.material.needsUpdate = true;
+      }
+    },
+    undefined,
+    () => { back.userData.thumbLoading = false; }
+  );
+}
+
+function releaseFullRes(card) {
+  if (!card || !card.userData.planes) return;
+  for (const plane of card.userData.planes) {
+    if (!plane.userData.fullTex) continue;
+    // Fallback a phTex se il retro non è ancora stato caricato
+    plane.material.map = plane.userData.thumbTex || phTex;
+    plane.material.needsUpdate = true;
+    plane.userData.fullTex.dispose();
+    plane.userData.fullTex = null;
+  }
+}
+
+// Avvia il rientro in griglia di una carta (z=0, fronte). Se un'altra carta stava
+// ancora rientrando, la chiude subito: returningMesh ne tiene una sola.
+function startReturn(card) {
+  if (returningMesh && returningMesh !== card) finishReturn(returningMesh);
+  card.userData.flip = 0;
+  returningMesh = card;
+}
+function finishReturn(card) {
+  card.position.z = 0;
+  card.rotation.y = 0;
+  card.userData.planes[1].visible = false;   // il retro torna nascosto
+  releaseFullRes(card);                      // libera la VRAM del full-res
+  if (returningMesh === card) returningMesh = null;
+}
+
+function zoomTo(mesh) {
+  if (!savedCam) {
+    savedCam = { x: camTargetX, y: camTargetY, z: camTargetZ };
+  }
+  // Riporta indietro l'eventuale mesh in hover (lo zoom gestirà il suo z)
+  if (hoveredMesh && hoveredMesh !== mesh) clearHoverMesh(hoveredMesh);
+  else if (hoveredMesh === mesh) {
+    // Il mesh cliccato era in hover: pulisci solo le map, lo z lo gestisce zoomTo
+    hoverTargets.delete(mesh);
+    hoverZTargets.delete(mesh);
+  }
+  hoveredMesh = null;
+
+  // La vecchia carta attiva torna a z=0 (e si rigira sul fronte)
+  if (zoomedMesh && zoomedMesh !== mesh) { startReturn(zoomedMesh); }
+
+  zoomedMesh = mesh;
+  mesh.userData.flip = 0;          // si apre sempre sul fronte (presentazione)
+  if (!mesh.userData.isPannellone) mesh.userData.planes[1].visible = true;
+  loadBackThumb(mesh);             // miniatura retro on-demand (se non ancora caricata)
+  loadFullRes(mesh);               // precarica fronte + retro full-res
+  camTargetX = mesh.position.x;
+  camTargetY = mesh.position.y;
+  camTargetZ = fitZForMesh();
+  velX = 0;
+  dimmingActive = true;
+  document.body.classList.add('zoomed');
+  updateZoomHUD();
+  setCanvasCursor('zoomout');
+  document.getElementById('vignette').classList.add('dimmed');
+}
+
+function unzoom() {
+  if (!savedCam) return;
+  camTargetX = savedCam.x;
+  camTargetY = savedCam.y;
+  camTargetZ = savedCam.z;
+  savedCam   = null;
+  // Pulisci anche l'hover residuo
+  clearHoverMesh(hoveredMesh);
+  hoveredMesh = null;
+  if (zoomedMesh) { startReturn(zoomedMesh); }
+  zoomedMesh = null;
+  dimmingActive = true;
+  setCanvasCursor('grab');
+  document.getElementById('vignette').classList.remove('dimmed');
+  document.body.classList.remove('zoomed');
+}
+
+// ── Marquee ("tapis roulant") ──────────────────────────────────
+// Scorrimento orizzontale infinito: ogni carta si muove e la sua X viene wrappata
+// modulo GRID_W (la griglia è contigua → loop senza cuciture visibili). La camera
+// resta ferma e gli input restano bloccati finché non si ripreme S.
+const marqueeBtn = document.getElementById('marquee-toggle');
+// Riflette lo stato sul pulsante del deck (icona ▶/⏸ + evidenziazione lime).
+// Chiamata sia dal click sul pulsante sia dal tasto S, così restano in sync.
+function syncMarqueeBtn() {
+  if (!marqueeBtn) return;
+  marqueeBtn.classList.toggle('on', marqueeActive);
+  marqueeBtn.setAttribute('aria-pressed', marqueeActive ? 'true' : 'false');
+  marqueeBtn.innerHTML = marqueeActive ? '&#10074;&#10074;' : '&#9654;';   // ❚❚ / ▶
+  marqueeBtn.title = marqueeActive ? 'Ferma scorrimento' : 'Scorrimento automatico (S)';
+}
+
+function startMarquee() {
+  if (zoomedMesh || returningMesh) return;   // solo dalla griglia, a riposo
+  // Azzera hover residuo e riporta ogni carta allo stato neutro (scala 1, z 0).
+  if (hoveredMesh) clearHoverMesh(hoveredMesh);
+  hoveredMesh = null;
+  hoverTargets.clear();
+  hoverZTargets.clear();
+  for (const c of cards) {
+    c.scale.setScalar(1);
+    c.position.z = 0;
+    cardRenderOrder(c, 0);
+  }
+  velX = 0; velY = 0;
+  // Mantiene marqueeOffset per continuare da dove si era fermato
+  marqueeActive = true;
+  setCanvasCursor('grab');
+  syncMarqueeBtn();
+}
+
+function stopMarquee() {
+  marqueeActive = false;
+  syncMarqueeBtn();
+}
+
+// Passa alla carta adiacente (soggetto prec/succ), saltando le celle vuote.
+function navigateCard(dRow, dCol) {
+  if (!zoomedMesh) return;
+  let { row, col } = zoomedMesh.userData;
+  for (let i = 0; i < CFG.ROWS * CFG.COLS; i++) {
+    row = (row + dRow + CFG.ROWS) % CFG.ROWS;
+    col = (col + dCol + CFG.COLS) % CFG.COLS;
+    const c = meshGrid[row * CFG.COLS + col];
+    if (c && c !== zoomedMesh) { zoomTo(c); return; }
+  }
+}
+
+// Gira la carta (fronte ↔ retro). side opzionale: 0=fronte, 1=retro; altrimenti alterna.
+function flipCard(side) {
+  if (!zoomedMesh) return;
+  const next = (side !== undefined) ? side : (zoomedMesh.userData.flip ? 0 : 1);
+  zoomedMesh.userData.flip = next;
+  loadFullRes(zoomedMesh);   // assicura il full-res del lato che comparirà
+  updateZoomHUD();
+}
+
+const detLabel = document.getElementById('det-label');
+const detKind  = document.getElementById('det-kind');
+function updateZoomHUD() {
+  if (!zoomedMesh) return;
+  detLabel.textContent = '';
+  detKind.textContent  = '';
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Cursore canvas
+   ══════════════════════════════════════════════════════════════ */
+function setCanvasCursor(c) {
+  canvas.classList.remove('grabbing','zoomin','zoomout');
+  canvas.style.cursor = '';
+  if (c !== 'grab') canvas.classList.add(c);
+  else canvas.style.cursor = 'grab';
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Mouse drag
+   ══════════════════════════════════════════════════════════════ */
+let dragging     = false;
+let dragStartPx  = 0;
+let dragStartPxY = 0;
+let dragStartCamX = 0;
+let dragStartCamY = 0;
+let frameVelX    = 0;
+let frameVelY    = 0;
+
+canvas.addEventListener('mousedown', (e) => {
+  if (marqueeActive) return;
+  dragStartPx  = e.clientX;  // aggiorna sempre: serve al click handler per distinguere click da drag
+  dragStartPxY = e.clientY;
+  dragging = true;
+  dragStartCamX = camTargetX;
+  dragStartCamY = camTargetY;
+  frameVelX     = 0;
+  frameVelY     = 0;
+  setCanvasCursor('grabbing');
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (marqueeActive) return;
+  if (!dragging) {
+    updateHover(e.clientX, e.clientY);
+    return;
+  }
+  const dPx    = e.clientX - dragStartPx;
+  const dWorld = (dPx / window.innerWidth) * halfViewX() * 2;
+  let nx       = dragStartCamX - dWorld;
+
+  if (zoomedMesh) {
+    // Nel dettaglio: limita il movimento con margine ristretto
+    const card = zoomedMesh;
+    const marginX = CFG.IMG_W * 0.6;
+    nx = Math.max(card.position.x - marginX, Math.min(card.position.x + marginX, nx));
+  } else {
+    nx = clampX(nx);
+  }
+  frameVelX    = nx - camTargetX;
+  camTargetX   = nx;
+
+  const dPxY    = e.clientY - dragStartPxY;
+  const dWorldY = (dPxY / window.innerHeight) * halfViewY() * 2;
+  let ny        = dragStartCamY + dWorldY;  // trascini giù → la griglia scende
+
+  if (zoomedMesh) {
+    // Nel dettaglio: limita il movimento con margine ristretto
+    const card = zoomedMesh;
+    const marginY = CFG.IMG_H * 0.6;
+    ny = Math.max(card.position.y - marginY, Math.min(card.position.y + marginY, ny));
+  } else {
+    ny = clampY(ny);
+  }
+  frameVelY     = ny - camTargetY;
+  camTargetY    = ny;
+});
+
+window.addEventListener('mouseup', () => {
+  if (!dragging) return;
+  dragging = false;
+  setCanvasCursor(zoomedMesh ? 'zoomout' : 'grab');
+  velX = frameVelX;
+  velY = frameVelY;
+});
+
+/* ── Click ────────────────────────────────────────────────── */
+canvas.addEventListener('click', (e) => {
+  if (marqueeActive) return;
+  // ignora se era un vero drag (su uno qualsiasi dei due assi)
+  if (Math.abs(e.clientX - dragStartPx) > 5 || Math.abs(e.clientY - dragStartPxY) > 5) return;
+
+  if (zoomedMesh) {
+    const card = cardAtRay(e.clientX, e.clientY);
+    if (card === zoomedMesh) flipCard();      // click sulla carta aperta → gira
+    else if (card)           zoomTo(card);    // click su un'altra carta → aprila
+    else                     unzoom();        // click fuori → chiudi
+    return;
+  }
+  const card = cardAtRay(e.clientX, e.clientY);
+  if (card && !card.userData.isPannellone) zoomTo(card);  // zoom solo per carte singole
+});
+
+/* ══════════════════════════════════════════════════════════════
+   Touch — pan (normale) + tap (zoom)
+   ══════════════════════════════════════════════════════════════ */
+let touchStartX    = 0;
+let touchStartY    = 0;
+let touchStartCamX = 0;
+let touchStartCamY = 0;
+let touchVel       = 0;
+let touchVelY      = 0;
+let touchIsClick   = false;
+let touchT0        = 0;
+// pinch
+let pinchDist0     = 0;
+let pinchZ0        = 0;
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (marqueeActive) return;
+  if (e.touches.length === 1) {
+    const t = e.touches[0];
+    touchStartX    = t.clientX;
+    touchStartY    = t.clientY;
+    touchStartCamX = camTargetX;
+    touchStartCamY = camTargetY;
+    touchVel       = 0;
+    touchVelY      = 0;
+    touchIsClick   = true;
+    touchT0        = Date.now();
+  } else if (e.touches.length === 2) {
+    touchIsClick = false;
+    pinchDist0 = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    pinchZ0 = camTargetZ;
+  }
+}, { passive: false });
+
+// Variabili per swipe nel dettaglio (mobile)
+let swipeStartX = 0;
+let swipeStartY = 0;
+
+canvas.addEventListener('touchstart', (e) => {
+  if (zoomedMesh && isMobile && e.touches.length === 1) {
+    swipeStartX = e.touches[0].clientX;
+    swipeStartY = e.touches[0].clientY;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (marqueeActive) return;
+  if (e.touches.length === 1 && !zoomedMesh) {
+    const t      = e.touches[0];
+    const dPx    = t.clientX - touchStartX;
+    const dWorld = (dPx / window.innerWidth) * halfViewX() * 2;
+    const nx     = clampX(touchStartCamX - dWorld);
+    touchVel     = nx - camTargetX;
+    camTargetX   = nx;
+
+    const dPxY    = t.clientY - touchStartY;
+    const dWorldY = (dPxY / window.innerHeight) * halfViewY() * 2;
+    const ny      = clampY(touchStartCamY + dWorldY);
+    touchVelY     = ny - camTargetY;
+    camTargetY    = ny;
+
+    if (Math.abs(dPx) > 9 || Math.abs(dPxY) > 9) touchIsClick = false;
+  } else if (e.touches.length === 2) {
+    const d = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    const newZ = pinchZ0 * (pinchDist0 / d);
+    camTargetZ = Math.max(CFG.CAM_Z_MIN, Math.min(CFG.CAM_Z_MAX, newZ));
+
+    // Mobile: quando si raggiunge zoom out massimo dal dettaglio, chiudi la vista
+    if (zoomedMesh && isMobile && camTargetZ === CFG.CAM_Z_MAX && newZ > CFG.CAM_Z_MAX) {
+      savedCam = null;
+      clearHoverMesh(hoveredMesh);
+      hoveredMesh = null;
+      startReturn(zoomedMesh);
+      zoomedMesh = null;
+      dimmingActive = true;
+      setCanvasCursor('grab');
+      document.getElementById('vignette').classList.remove('dimmed');
+      document.body.classList.remove('zoomed');
+    }
+
+    if (!zoomedMesh) { camTargetX = clampX(camTargetX); camTargetY = clampY(camTargetY); }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (marqueeActive) return;
+
+  if (zoomedMesh && isMobile && e.changedTouches.length === 1) {
+    // Dettaglio mobile: swipe per navigare e tap per flipare
+    const t = e.changedTouches[0];
+    const dX = t.clientX - swipeStartX;
+    const dY = t.clientY - swipeStartY;
+    const distance = Math.sqrt(dX * dX + dY * dY);
+    const timeDiff = Date.now() - touchT0;
+
+    // Swipe orizzontale (> 50px e < 300ms)
+    if (Math.abs(dX) > 50 && Math.abs(dX) > Math.abs(dY) && timeDiff < 300) {
+      if (dX > 0) navigateCard(0, -1);  // Swipe destra → soggetto precedente
+      else        navigateCard(0, +1);  // Swipe sinistra → soggetto successivo
+    }
+    // Swipe verticale (> 50px e < 300ms)
+    else if (Math.abs(dY) > 50 && Math.abs(dY) > Math.abs(dX) && timeDiff < 300) {
+      if (dY > 0) navigateCard(-1, 0);  // Swipe giù → soggetto sopra
+      else        navigateCard(+1, 0);  // Swipe su → soggetto sotto
+    }
+    // Tap semplice (< 10px movimento)
+    else if (distance < 10 && timeDiff < 300 && !zoomedMesh.userData.isPannellone) {
+      flipCard();
+    }
+  } else if (touchIsClick && Date.now() - touchT0 < 320) {
+    const t = e.changedTouches[0];
+    if (zoomedMesh) {
+      const card = cardAtRay(t.clientX, t.clientY);
+      if (card === zoomedMesh && !card.userData.isPannellone) flipCard();
+      else if (card && !card.userData.isPannellone)           zoomTo(card);
+      else                     unzoom();
+    } else {
+      const card = cardAtRay(t.clientX, t.clientY);
+      if (card && !card.userData.isPannellone) zoomTo(card);
+    }
+  } else if (!zoomedMesh) {
+    velX = touchVel;
+    velY = touchVelY;
+  }
+}, { passive: false });
+
+/* ══════════════════════════════════════════════════════════════
+   Scroll wheel → ZOOM verso il cursore
+   ══════════════════════════════════════════════════════════════ */
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (marqueeActive) return;
+  const oldZ = camTargetZ;
+  const zMin = zoomedMesh ? CFG.CAM_Z_MIN : CFG.CAM_Z_GRID_MIN;
+  const newZ = Math.max(zMin, Math.min(CFG.CAM_Z_MAX, oldZ + e.deltaY * 0.009));
+  if (newZ === oldZ) return;
+
+  // In entrambe le modalità (normale e immagine attiva): zoom verso il cursore.
+  // Il punto mondo sotto il cursore rimane fisso dopo il cambio di Z.
+  //   dx = ndcX × (halfView(oldZ) − halfView(newZ))
+  const ndcX  = (2 * e.clientX / window.innerWidth)  - 1;
+  const ndcY  = 1 - (2 * e.clientY / window.innerHeight);
+  const tanHV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const dHVX  = tanHV * (oldZ - newZ) * camera.aspect;
+  const dHVY  = tanHV * (oldZ - newZ);
+
+  if (zoomedMesh) {
+    camTargetY = clampY(camTargetY + ndcY * dHVY, newZ);
+
+    // Dezoom automatico: se ci si allontana oltre 2.5× la distanza di fit,
+    // l'immagine non è più attiva ma la camera rimane dov'è (non torna a savedCam).
+    if (newZ > fitZForMesh() * 2.5) {
+      savedCam = null;                    // scarta il punto di ritorno salvato
+      clearHoverMesh(hoveredMesh);
+      hoveredMesh = null;
+      startReturn(zoomedMesh);            // rientra sul fronte
+      zoomedMesh = null;
+      dimmingActive = true;
+      setCanvasCursor('grab');
+      document.getElementById('vignette').classList.remove('dimmed');
+      document.body.classList.remove('zoomed');
+      // sblocca anche X per questo stesso scroll
+      camTargetX = clampX(camTargetX + ndcX * dHVX, newZ);
+    }
+  } else {
+    camTargetX = clampX(camTargetX + ndcX * dHVX, newZ);
+    camTargetY = clampY(camTargetY + ndcY * dHVY, newZ);
+  }
+  camTargetZ = newZ;
+}, { passive: false });
+
+/* ══════════════════════════════════════════════════════════════
+   Pulsanti freccia sinistra/destra (navigazione griglia)
+   ══════════════════════════════════════════════════════════════ */
+let navTimer = null;
+function startNav(dir) {
+  if (marqueeActive) return;
+  stopNav();
+  navTimer = setInterval(() => {
+    if (zoomedMesh || marqueeActive) return;
+    camTargetX = clampX(camTargetX + dir * CFG.NAV_STEP); velX = 0;
+  }, 16);
+}
+function stopNav() { clearInterval(navTimer); navTimer = null; }
+
+// Stepper del deck (modalità normale): pan continuo finché premuti.
+document.getElementById('step-prev').addEventListener('mousedown', () => startNav(-1));
+document.getElementById('step-next').addEventListener('mousedown', () => startNav(+1));
+document.getElementById('step-prev').addEventListener('touchstart', (e) => { e.preventDefault(); startNav(-1); }, {passive:false});
+document.getElementById('step-next').addEventListener('touchstart', (e) => { e.preventDefault(); startNav(+1); }, {passive:false});
+['mouseup','touchend'].forEach(ev => window.addEventListener(ev, stopNav));
+
+// Toggle marquee dal deck (equivalente del tasto S; unico controllo su mobile).
+if (marqueeBtn) marqueeBtn.addEventListener('click', () => {
+  if (marqueeActive) stopMarquee(); else startMarquee();
+});
+
+/* ── Deck dettaglio: soggetto prec/succ · gira (fronte↔retro) · chiudi ── */
+document.getElementById('det-prev').addEventListener('click', () => navigateCard(0, -1));
+document.getElementById('det-next').addEventListener('click', () => navigateCard(0, +1));
+document.getElementById('det-flip').addEventListener('click', () => flipCard());
+document.getElementById('det-close').addEventListener('click', unzoom);
+if (isMobile) document.getElementById('zoom-close-btn').addEventListener('click', unzoom);
+
+/* ── Legenda comandi (?) ── */
+const legendEl = document.getElementById('legend');
+let legendHasBeenOpenedBefore = false;
+
+// Adatta legenda per mobile
+if (isMobile) {
+  const zoomItem = document.getElementById('zoom-item');
+  const navItem = document.getElementById('nav-item');
+  if (zoomItem) zoomItem.innerHTML = '<b>Zoom</b> Avvicina / allontana';
+  if (navItem) navItem.innerHTML = '<b>Sposta</b> Tra i soggetti';
+  // Il marquee (tasto S) richiede una tastiera: nascondi la voce su mobile.
+  const marqueeItem = document.getElementById('marquee-item');
+  if (marqueeItem) marqueeItem.style.display = 'none';
+}
+
+function toggleLegend(force) {
+  const on = (force !== undefined) ? force : !legendEl.classList.contains('on');
+  legendEl.classList.toggle('on', on);
+
+  if (on && !legendHasBeenOpenedBefore) {
+    // Prima apertura (automatica all'avvio)
+    legendEl.classList.add('legend-first-open');
+    legendHasBeenOpenedBefore = true;
+  } else if (on) {
+    // Riaperture (manuali dal ?)
+    legendEl.classList.remove('legend-first-open');
+  }
+}
+document.getElementById('help-btn').addEventListener('click', () => toggleLegend());
+document.querySelector('.legend-close').addEventListener('click', () => toggleLegend(false));
+legendEl.addEventListener('click', () => toggleLegend(false));   // click fuori dalla card chiude
+legendEl.querySelector('.legend-card').addEventListener('click', (e) => e.stopPropagation());
+
+/* ══════════════════════════════════════════════════════════════
+   Scrubber — posizione orizzontale nella collezione (no contatore)
+   ══════════════════════════════════════════════════════════════ */
+const scrubEl  = document.getElementById('scrubber');
+const scrubFill = document.getElementById('scrub-fill');
+const scrubKnob = document.getElementById('scrub-knob');
+let scrubbing = false;
+
+// Limiti orizzontali pannabili al z corrente (stessa logica di clampX).
+function scrubBounds() {
+  const hv = halfViewX();
+  return { mn: OX + hv, mx: OX + GRID_W - hv };
+}
+// Aggiorna manopola/riempimento dalla posizione camera (chiamato nel loop).
+let lastScrubF = -1;
+function updateScrubber() {
+  if (scrubbing || zoomedMesh) return;
+  const { mn, mx } = scrubBounds();
+  if (mx <= mn) {                       // griglia più stretta della vista → disabilita
+    if (!scrubEl.classList.contains('disabled')) scrubEl.classList.add('disabled');
+    return;
+  }
+  scrubEl.classList.remove('disabled');
+  const f = Math.max(0, Math.min(1, (camTargetX - mn) / (mx - mn)));
+  if (Math.abs(f - lastScrubF) < 0.0015) return;   // evita scritture DOM inutili
+  lastScrubF = f;
+  scrubFill.style.width = (f * 100) + '%';
+  scrubKnob.style.left  = (f * 100) + '%';
+}
+// Da posizione cursore sul binario → camTargetX (griglia) o navigazione (dettaglio).
+function scrubToClientX(clientX) {
+  const r = scrubEl.getBoundingClientRect();
+  const f = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  lastScrubF = -1; updateScrubberForce(f);
+
+  if (zoomedMesh) {
+    // Nel dettaglio: naviga tra i soggetti
+    const subjectIndex = Math.round(f * (CFG.NUM_SUBJECTS - 1));
+    const row = Math.floor(subjectIndex / CFG.COLS);
+    const col = subjectIndex % CFG.COLS;
+    const card = meshGrid[row * CFG.COLS + col];
+    if (card) zoomTo(card);
+  } else {
+    // Nella griglia: controlla la camera X
+    const { mn, mx } = scrubBounds();
+    if (mx <= mn) return;
+    camTargetX = clampX(mn + f * (mx - mn));
+    velX = 0;
+  }
+}
+function updateScrubberForce(f) {
+  scrubFill.style.width = (f * 100) + '%';
+  scrubKnob.style.left  = (f * 100) + '%';
+}
+scrubEl.addEventListener('pointerdown', (e) => {
+  if (marqueeActive) return;
+  scrubbing = true; scrubEl.classList.add('dragging');
+  scrubEl.setPointerCapture(e.pointerId);
+  scrubToClientX(e.clientX);
+});
+scrubEl.addEventListener('pointermove', (e) => { if (scrubbing) scrubToClientX(e.clientX); });
+function endScrub(e) {
+  if (!scrubbing) return;
+  scrubbing = false; scrubEl.classList.remove('dragging');
+  if (e && e.pointerId !== undefined && scrubEl.hasPointerCapture(e.pointerId))
+    scrubEl.releasePointerCapture(e.pointerId);
+}
+scrubEl.addEventListener('pointerup', endScrub);
+scrubEl.addEventListener('pointercancel', endScrub);
+// Tastiera sullo scrubber: ← → spostano la vista.
+scrubEl.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft')  { camTargetX = clampX(camTargetX - CFG.NAV_STEP * 3); velX = 0; }
+  if (e.key === 'ArrowRight') { camTargetX = clampX(camTargetX + CFG.NAV_STEP * 3); velX = 0; }
+});
+
+/* ══════════════════════════════════════════════════════════════
+   Tastiera
+   ══════════════════════════════════════════════════════════════ */
+const KEYS = {};
+window.addEventListener('keydown', (e) => {
+  KEYS[e.key] = true;
+  if (e.key === '?') { toggleLegend(); return; }
+  if (e.key === 'Escape') {
+    if (legendEl.classList.contains('on')) { toggleLegend(false); return; }
+    if (marqueeActive) { stopMarquee(); return; }
+    unzoom(); return;
+  }
+  // S → avvia/ferma il marquee (solo dalla griglia, a legenda chiusa)
+  if (e.key === 's' || e.key === 'S') {
+    if (zoomedMesh || legendEl.classList.contains('on')) return;
+    if (marqueeActive) stopMarquee(); else startMarquee();
+    e.preventDefault();
+    return;
+  }
+  if (zoomedMesh) {
+    if (e.key === 'ArrowRight')      navigateCard(0, +1);   // soggetto successivo
+    else if (e.key === 'ArrowLeft')  navigateCard(0, -1);   // soggetto precedente
+    else if (e.key === 'ArrowUp')    { if (!isMobile) navigateCard(-1, 0); else flipCard(0); }  // desktop: su riga; mobile: fronte
+    else if (e.key === 'ArrowDown')  { if (!isMobile) navigateCard(+1, 0); else flipCard(1); }  // desktop: giù riga; mobile: retro
+    else if (e.key === ' ' || e.key === 'f' || e.key === 'F') flipCard();  // alterna
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', (e) => delete KEYS[e.key]);
+
+/* ══════════════════════════════════════════════════════════════
+   Raycasting
+   ══════════════════════════════════════════════════════════════ */
+const raycaster = new THREE.Raycaster();
+const nd        = new THREE.Vector2();
+
+// Restituisce la CARTA sotto il punto schermo (o null). In griglia il backface
+// culling fa colpire solo i fronti; da zoom anche il retro (face verso la camera).
+function cardAtRay(cx, cy) {
+  nd.x =  (cx / window.innerWidth)  * 2 - 1;
+  nd.y = -(cy / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(nd, camera);
+  const hits = raycaster.intersectObjects(planes);
+  if (hits.length) {
+    const card = hits[0].object.userData.card;
+    // Nei controlli di click, ignora i pannelloni se necessario
+    return card;
+  }
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Hover (solo desktop, solo fuori dallo zoom)
+   ══════════════════════════════════════════════════════════════ */
+let hoveredMesh     = null;
+const hoverTargets  = new Map();   // mesh → target scale
+const hoverZTargets = new Map();   // mesh → target z position
+let   hoverThrottle = 0;
+
+const HOVER_Z = 0.03;   // elevazione Z sull'hover (metà di ACTIVE_Z)
+
+function clearHoverMesh(m) {
+  // Riporta una carta allo stato pre-hover (usato anche da zoomTo)
+  if (!m) return;
+  hoverTargets.set(m, 1.0);
+  hoverZTargets.set(m, 0);
+  cardRenderOrder(m, 0);
+}
+
+// Calcola il mesh della griglia sotto il cursore in O(1) (no raycast)
+function meshAtCursor(cx, cy) {
+  const ndcX  = (cx / window.innerWidth)  * 2 - 1;
+  const ndcY  = 1 - (cy / window.innerHeight) * 2;
+  const tanHV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const cz    = camera.position.z;
+  const wx    = camera.position.x + ndcX * tanHV * cz * camera.aspect;
+  // worldY nel sistema locale di grp (sottrae l'offset della fluttuazione)
+  const wy    = camera.position.y + ndcY * tanHV * cz - grp.position.y;
+  // Tiene conto di marqueeOffset per l'hover corretto anche quando il marquee è in pausa
+  const col   = ((Math.floor((wx - OX + marqueeOffset) / CELL_W) % CFG.COLS) + CFG.COLS) % CFG.COLS;
+  const row   = Math.floor((OY - wy) / CELL_H);
+  if (row < 0 || row >= CFG.ROWS) return null;
+  return meshGrid[row * CFG.COLS + col];   // null se la cella è skip
+}
+
+function updateHover(cx, cy) {
+  if (zoomedMesh || dragging) return;
+  const now = performance.now();
+  if (now - hoverThrottle < 30) return;
+  hoverThrottle = now;
+
+  const hit = meshAtCursor(cx, cy);
+  if (hit !== hoveredMesh) {
+    // Riporta indietro il mesh che stava in hover
+    clearHoverMesh(hoveredMesh);
+    if (hit && !hit.userData.isPannellone) {
+      hoverTargets.set(hit, CFG.HOVER_SCL);
+      hoverZTargets.set(hit, HOVER_Z);
+      cardRenderOrder(hit, 3);    // sopra le carte normali (0)
+      setCanvasCursor('zoomin');
+    } else {
+      setCanvasCursor('grab');
+    }
+    hoveredMesh = hit;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Loop di animazione
+   ══════════════════════════════════════════════════════════════ */
+let lastFrame = performance.now();
+const startTime = lastFrame;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min((now - lastFrame) / 1000, 0.05);
+  lastFrame = now;
+
+  /* ── Marquee ("tapis roulant"): scorrimento orizzontale infinito ── */
+  // marqueeT sale/scende linearmente verso 1/0; l'easing dà la rampa di velocità.
+  const mStep = dt / MARQUEE_EASE_DURATION;
+  marqueeT = marqueeActive ? Math.min(1, marqueeT + mStep) : Math.max(0, marqueeT - mStep);
+  const marqueeMoving = marqueeT > 0;
+  if (marqueeMoving) {
+    marqueeOffset += CFG.MARQUEE_SPEED * easeInOutQuad(marqueeT) * dt;
+    // Wrap modulo GRID_W: la griglia contigua piastrella senza cuciture visibili.
+    for (const c of cards) {
+      c.position.x = ((c.userData.baseX - OX - marqueeOffset) % GRID_W + GRID_W) % GRID_W + OX;
+    }
+  }
+
+  /* ── Frecce tastiera (solo navigazione normale) ── */
+  if (!zoomedMesh && !marqueeActive) {
+    if (KEYS['ArrowLeft']  || KEYS['a'])
+      camTargetX = clampX(camTargetX - CFG.NAV_STEP * 60 * dt);
+    if (KEYS['ArrowRight'] || KEYS['d'])
+      camTargetX = clampX(camTargetX + CFG.NAV_STEP * 60 * dt);
+    if (KEYS['ArrowUp']    || KEYS['w'])
+      camTargetY = clampY(camTargetY + CFG.NAV_STEP * 60 * dt);
+    if (KEYS['ArrowDown'])   // 's' è ora riservato al marquee (vedi keydown)
+      camTargetY = clampY(camTargetY - CFG.NAV_STEP * 60 * dt);
+  }
+
+  /* ── Inerzia drag (solo navigazione normale) — frame-rate independent ── */
+  if (!dragging && !zoomedMesh && !marqueeActive) {
+    const decay = Math.pow(CFG.INERTIA, dt * 60);
+    velX      *= decay;
+    velY      *= decay;
+    camTargetX = clampX(camTargetX + velX, camTargetZ);
+    camTargetY = clampY(camTargetY + velY, camTargetZ);
+    if (Math.abs(velX) < 5e-5) velX = 0;
+    if (Math.abs(velY) < 5e-5) velY = 0;
+  }
+
+  /* ── Smooth camera — frame-rate independent ── */
+  const lx = zoomedMesh ? CFG.LERP_ZOOM : CFG.LERP_NAV;
+  const lz = zoomedMesh ? 0.05 : 0.08;
+  camera.position.x = lerpDt(camera.position.x, camTargetX, lx, dt);
+  camera.position.y = lerpDt(camera.position.y, camTargetY, lx, dt);
+  camera.position.z = lerpDt(camera.position.z, camTargetZ, lz, dt);
+
+
+  /* ── Fluttuazione verticale (solo normale; ferma in zoom e in marquee) ── */
+  const floatValue = Math.sin((now - startTime) / 1000 * Math.PI * 2 * CFG.FLOAT_SPD) * CFG.FLOAT_AMP;
+  
+  if (!zoomedMesh && !marqueeMoving) {
+    // Lerpa verso il valore attuale dell'oscillazione per una transizione fluida
+    grp.position.y = lerp(grp.position.y, floatValue, 0.1);
+  } else {
+    grp.position.y = lerp(grp.position.y, 0, 0.1); // ferma il float durante ease-out/stop
+  }
+
+  /* ── Hover scale ── */
+  hoverTargets.forEach((tgt, m) => {
+    const s = lerp(m.scale.x, tgt, 0.15);
+    m.scale.setScalar(s);
+    if (Math.abs(s - tgt) < 8e-4) { m.scale.setScalar(tgt); hoverTargets.delete(m); }
+  });
+
+  /* ── Hover z-elevation ── */
+  hoverZTargets.forEach((tgt, m) => {
+    const newZ = lerp(m.position.z, tgt, 0.15);
+    m.position.z = newZ;
+    if (Math.abs(newZ - tgt) < 0.001) {
+      m.position.z = tgt;
+      hoverZTargets.delete(m);
+    }
+  });
+
+  /* ── Dimming: attivo solo durante e dopo uno zoom ── */
+  if (dimmingActive) {
+    let settled = true;
+    for (const card of cards) {
+      const tgt = (zoomedMesh && card !== zoomedMesh) ? COLOR_DIM : COLOR_FULL;
+      for (const p of card.userData.planes) p.material.color.lerp(tgt, 0.08);
+      if (Math.abs(card.userData.planes[0].material.color.r - tgt.r) > 0.002) settled = false;
+    }
+    if (settled) dimmingActive = false;
+  }
+
+  /* ── Carta attiva: pop in avanti + flip 3D verso il lato scelto ── */
+  const ACTIVE_Z = 0.06;   // quanto sporge davanti alle carte contigue
+  if (zoomedMesh) {
+    zoomedMesh.position.z = lerp(zoomedMesh.position.z, ACTIVE_Z, 0.14);
+    zoomedMesh.rotation.y = lerp(zoomedMesh.rotation.y, zoomedMesh.userData.flip * Math.PI, 0.16);
+  }
+  // Carta che torna in griglia: rientra a z=0 e si rigira sul fronte
+  if (returningMesh && returningMesh !== zoomedMesh) {
+    returningMesh.position.z = lerp(returningMesh.position.z, 0, 0.14);
+    returningMesh.rotation.y = lerp(returningMesh.rotation.y, 0, 0.16);
+    if (Math.abs(returningMesh.position.z) < 0.001 && Math.abs(returningMesh.rotation.y) < 0.01) {
+      finishReturn(returningMesh);
+    }
+  }
+
+  updateScrubber();   // allinea la manopola alla posizione orizzontale corrente
+
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ══════════════════════════════════════════════════════════════
+   Resize
+   ══════════════════════════════════════════════════════════════ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (!zoomedMesh) camTargetX = clampX(camTargetX);
+  // se zoommati, ricalcola il fit-Z per il nuovo aspect ratio
+  if (zoomedMesh) camTargetZ = fitZForMesh();
+});
