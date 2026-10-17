@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-17T19:39:34.098435Z",
+  "title": "Design System: Atlante Fenotipico di Comunità",
+  "extensions": {
+    "colorMeta": {
+      "night-teal": {
+        "role": "neutral",
+        "displayName": "Notte Teal",
+        "canonical": "#06141b",
+        "tonalRamp": [
+          "#0e2e3f",
+          "#174d68",
+          "#206c92",
+          "#2a8bbc",
+          "#43a5d5",
+          "#79bfe1",
+          "#b4dbee",
+          "#eaf5fa"
+        ]
+      },
+      "tide-teal": {
+        "role": "secondary",
+        "displayName": "Teal Marea",
+        "canonical": "#2596be",
+        "tonalRamp": [
+          "#0c3340",
+          "#15546b",
+          "#1d7695",
+          "#2598c0",
+          "#3fb1da",
+          "#76c8e4",
+          "#b2e0f0",
+          "#eaf6fb"
+        ]
+      },
+      "ember-coral": {
+        "role": "primary",
+        "displayName": "Corallo Brace",
+        "canonical": "#ff9150",
+        "tonalRamp": [
+          "#4c1c00",
+          "#802f00",
+          "#b24200",
+          "#e65500",
+          "#ff6f1a",
+          "#ff985c",
+          "#ffc5a3",
+          "#ffefe5"
+        ]
+      },
+      "frost-ink": {
+        "role": "neutral",
+        "displayName": "Ghiaccio",
+        "canonical": "#eafbff",
+        "tonalRamp": [
+          "#003e4c",
+          "#006780",
+          "#0090b2",
+          "#00bae6",
+          "#1ad3ff",
+          "#5ce0ff",
+          "#a3eeff",
+          "#e5faff"
+        ]
+      },
+      "pure-white": {
+        "role": "neutral",
+        "displayName": "Bianco",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#262626",
+          "#404040",
+          "#595959",
+          "#737373",
+          "#8c8c8c",
+          "#adadad",
+          "#d1d1d1",
+          "#f2f2f2"
+        ]
+      },
+      "signal-magenta": {
+        "role": "tertiary",
+        "displayName": "Magenta Segnale",
+        "canonical": "#ee15ef",
+        "tonalRamp": [
+          "#470548",
+          "#770877",
+          "#a60ba7",
+          "#d60fd7",
+          "#ef28f0",
+          "#f466f5",
+          "#f9a9f9",
+          "#fde7fd"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "brand": {
+        "displayName": "Brand",
+        "purpose": "Titolo del sito e loader, sempre LaLuxes maiuscolo."
+      },
+      "display": {
+        "displayName": "Display",
+        "purpose": "Numero della scheda e titolo legenda."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Etichette e didascalie, maiuscolo spaziato."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Descrizioni nella legenda."
+      }
+    },
+    "shadows": [
+      {
+        "name": "legend",
+        "value": "0 24px 60px rgba(0,0,0,.5)",
+        "purpose": "Unica ombra strutturale: la scheda della legenda."
+      }
+    ],
+    "motion": [
+      {
+        "name": "chrome-in",
+        "value": ".7s ease",
+        "purpose": "Ingresso di barra e deck dopo il caricamento."
+      },
+      {
+        "name": "state",
+        "value": ".18s",
+        "purpose": "Transizioni di colore e bordo dei pulsanti."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "560px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Round Button",
+      "kind": "button",
+      "refersTo": "button-round",
+      "description": "Comando circolare: frecce, chiudi, aiuto.",
+      "html": "<button class=\"ds-btn\">&#8250;</button>",
+      "css": ".ds-btn{width:40px;height:40px;border-radius:999px;background:rgba(37,150,190,.12);border:1px solid rgba(37,150,190,.4);color:#2596be;font-size:1.4rem;line-height:1;cursor:pointer;transition:background .18s,color .18s,border-color .18s}.ds-btn:hover,.ds-btn:focus-visible{background:rgba(255,145,80,.14);color:#ff9150;border-color:rgba(255,145,80,.5);outline:none}"
+    },
+    {
+      "name": "Flip Button",
+      "kind": "button",
+      "refersTo": "button-flip",
+      "description": "Azione primaria del dettaglio.",
+      "html": "<button class=\"ds-flip\">&#8635; GIRA</button>",
+      "css": ".ds-flip{height:40px;padding:0 .9rem;border-radius:999px;background:rgba(255,145,80,.12);border:1px solid rgba(255,145,80,.45);color:#ff9150;font:500 .75rem 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.14em;text-transform:uppercase;cursor:pointer}.ds-flip:hover{background:rgba(255,145,80,.2);border-color:rgba(255,145,80,.7)}"
+    },
+    {
+      "name": "Legend Key",
+      "kind": "chip",
+      "refersTo": "legend-key",
+      "description": "Tasto o gesto nella legenda dei comandi.",
+      "html": "<b class=\"ds-key\">Trascina</b>",
+      "css": ".ds-key{display:inline-block;min-width:5.6rem;text-align:center;padding:.2rem .5rem;border-radius:6px;background:rgba(37,150,190,.12);border:1px solid rgba(37,150,190,.22);color:#2596be;font:600 .75rem 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.06em}"
+    },
+    {
+      "name": "Legend Card",
+      "kind": "card",
+      "refersTo": "legend-card",
+      "description": "Scheda della legenda dei comandi.",
+      "html": "<div class=\"ds-card\"><h2>Come navigare</h2><p>Esplora la griglia</p></div>",
+      "css": ".ds-card{max-width:440px;background:rgba(8,22,30,.96);border:1px solid rgba(37,150,190,.4);border-radius:14px;padding:1.6rem 1.8rem;color:#eafbff;box-shadow:0 24px 60px rgba(0,0,0,.5)}.ds-card h2{font:400 1.7rem Newsreader,Georgia,serif;color:#ff9150;text-align:center;margin-bottom:1rem}.ds-card p{font:400 .95rem 'Hanken Grotesk',system-ui,sans-serif}"
+    },
+    {
+      "name": "Brand Mark",
+      "kind": "nav",
+      "refersTo": "typography.brand",
+      "description": "Titolo e sottotitolo dell'header.",
+      "html": "<div class=\"ds-brand\"><span>ATLANTE FENOTIPICO DI COMUNITÀ</span><small>Comunità di Pollica</small></div>",
+      "css": ".ds-brand{display:flex;flex-direction:column;gap:.18rem;color:#fff}.ds-brand span{font:400 1.2rem LaLuxes,Georgia,serif;letter-spacing:.24em;font-variant-ligatures:none}.ds-brand small{font:500 .75rem 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.2em;text-transform:uppercase}"
+    }
+  ],
+  "narrative": {
+    "northStar": "La Mappa dei Volti",
+    "overview": "L'Atlante si attraversa come un territorio: una griglia 15 × 10 di ritratti che si trascina, si avvicina, si apre. Il tono è scientifico e preciso; l'interfaccia è la legenda, mai l'attrazione.",
+    "keyCharacteristics": [
+      "Fondo unico #06141b che continua nella scena 3D.",
+      "Chrome minimo con pulsanti a pillola e bordo teal.",
+      "Un accento corallo per azione, magenta solo per la navigazione.",
+      "Serif per numeri e titoli, grottesco per comandi."
+    ],
+    "rules": [
+      {
+        "name": "The One Warm Voice Rule",
+        "body": "Il corallo è l'unico colore caldo e compare solo su azione, stato attivo o focus.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tinted Neutral Rule",
+        "body": "Nessun grigio: i secondari sono ink o teal con trasparenza.",
+        "section": "colors"
+      },
+      {
+        "name": "The 12px Floor Rule",
+        "body": "Nessun testo funzionale sotto i 12px.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Faux Bold Rule",
+        "body": "LaLuxes è solo 400: la gerarchia si fa con corpo, maiuscolo e spaziatura.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Chrome Rule",
+        "body": "I comandi non hanno ombra a riposo: bordo e tinta bastano.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do tenere --accent (#ff9150) solo su azioni, stati attivi e focus.",
+      "Do mantenere l'header in LaLuxes maiuscolo bianco, con legature disattivate.",
+      "Do usare tinte di ink o teal per i testi secondari, mai grigi.",
+      "Do portare ogni nuovo comando ad almeno 40px di altezza e testo di almeno 12px.",
+      "Do verificare ogni modifica a 360px di larghezza."
+    ],
+    "donts": [
+      "Don't mettere nomi, didascalie o testi inventati sulle persone ritratte.",
+      "Don't usare grassetti sintetici o pesi diversi da 400 con LaLuxes.",
+      "Don't aggiungere un secondo accento caldo né usare il magenta fuori dalla navigazione.",
+      "Don't coprire i volti: l'interfaccia non compete con le fotografie."
+    ]
+  }
+}
