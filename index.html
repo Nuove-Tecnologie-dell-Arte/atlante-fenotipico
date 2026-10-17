@@ -397,11 +397,13 @@
   </div>
 </div>
 
-<!-- Three.js r134 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+<!-- Three.js r184 (ES module: dal r160 non esiste più la build globale three.min.js) -->
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js" } }
+</script>
 
-<script>
-'use strict';
+<script type="module">
+import * as THREE from 'three';
 
 /* ══════════════════════════════════════════════════════════════
    CONFIG
@@ -591,7 +593,9 @@ function makePlaceholder() {
   ctx.strokeStyle = 'rgba(37,150,190,.25)';
   ctx.lineWidth = 1;
   ctx.strokeRect(.5, .5, w-1, h-1);
-  return new THREE.CanvasTexture(c);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 const phTex = makePlaceholder();
 
@@ -663,8 +667,8 @@ function cardRenderOrder(card, n) { for (const p of card.userData.planes) p.rend
 /* ── Colori per il dimming dei mesh non attivi ── */
 // MeshBasicMaterial moltiplica texture × color, quindi:
 //   color (1,1,1) = piena luminosità   |   color (0.3,0.3,0.3) = scurito al 30%
-const COLOR_FULL = new THREE.Color(1.0, 1.0, 1.0);
-const COLOR_DIM  = new THREE.Color(0.28, 0.28, 0.28);
+const COLOR_FULL = new THREE.Color().setRGB(1.0, 1.0, 1.0, THREE.SRGBColorSpace);
+const COLOR_DIM  = new THREE.Color().setRGB(0.28, 0.28, 0.28, THREE.SRGBColorSpace);
 
 /* ══════════════════════════════════════════════════════════════
    Caricamento texture
@@ -684,6 +688,7 @@ loadMgr.onLoad = () => setTimeout(hideLoading, 300);
 function onTexDone(plane, tex, url) {
   if (tex) {
     // Disabilita mipmap per le miniature: risparmia ~33% VRAM (100MB → 100MB senza overhead)
+    tex.colorSpace = THREE.SRGBColorSpace;
     tex.generateMipmaps = false;
     tex.minFilter = THREE.LinearFilter;
     plane.material.map = tex;
@@ -810,6 +815,7 @@ function loadPlaneFull(plane) {
       plane.userData.fullLoading = false;
       // Se la carta non è più quella aperta, scarta subito.
       if (plane.userData.card !== zoomedMesh) { tex.dispose(); return; }
+      tex.colorSpace = THREE.SRGBColorSpace;
       plane.userData.fullTex = tex;
       plane.material.map = tex;
       plane.material.needsUpdate = true;
@@ -835,6 +841,7 @@ function loadBackThumb(card) {
     thumbSrcN(back.userData.file),
     (tex) => {
       back.userData.thumbLoading = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       back.userData.thumbTex = tex;
@@ -1519,11 +1526,14 @@ function updateHover(cx, cy) {
 /* ══════════════════════════════════════════════════════════════
    Loop di animazione
    ══════════════════════════════════════════════════════════════ */
-const clock = new THREE.Clock();
+let lastFrame = performance.now();
+const startTime = lastFrame;
 
 function animate() {
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const now = performance.now();
+  const dt = Math.min((now - lastFrame) / 1000, 0.05);
+  lastFrame = now;
 
   /* ── Marquee ("tapis roulant"): scorrimento orizzontale infinito ── */
   // marqueeT sale/scende linearmente verso 1/0; l'easing dà la rampa di velocità.
@@ -1570,7 +1580,7 @@ function animate() {
 
 
   /* ── Fluttuazione verticale (solo normale; ferma in zoom e in marquee) ── */
-  const floatValue = Math.sin(clock.elapsedTime * Math.PI * 2 * CFG.FLOAT_SPD) * CFG.FLOAT_AMP;
+  const floatValue = Math.sin((now - startTime) / 1000 * Math.PI * 2 * CFG.FLOAT_SPD) * CFG.FLOAT_AMP;
   
   if (!zoomedMesh && !marqueeMoving) {
     // Lerpa verso il valore attuale dell'oscillazione per una transizione fluida
