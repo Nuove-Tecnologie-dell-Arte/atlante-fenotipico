@@ -36,7 +36,8 @@ style.css      stile (interfaccia, schermata di caricamento, legenda)
 main.js        scena 3D, caricamento, navigazione, input
 images/        immagini a piena risoluzione (001.webp … 226.webp)
 thumbs/        miniature JPG usate nella griglia; thumbs/pannelloni/ per i pannelloni
-*.otf          font LaLuxes (e Humane)
+fonts/         Newsreader e Hanken Grotesk (interfaccia)
+*.otf          LaLuxes (solo schermata di caricamento) e Humane (non usato)
 ```
 
 ## Come funziona
