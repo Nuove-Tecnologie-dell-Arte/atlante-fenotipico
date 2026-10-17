@@ -101,7 +101,7 @@ function lerpDt(a, b, t60, dt) {
 }
 
 // Flag per il dimming: true mentre c'è uno zoom attivo o la transizione
-// verso COLOR_FULL non è ancora completata. Evita 226 lerp inutili a frame.
+// verso il target non è ancora completata.
 let dimmingActive = false;
 
 // Cella (row,col) → indice soggetto (riga-major).
@@ -261,11 +261,19 @@ for (let i = 0; i < Math.min(CFG.NUM_SUBJECTS, availablePositions.length); i++) 
 // Helper: applica un'azione a entrambi i piani di una carta.
 function cardRenderOrder(card, n) { for (const p of card.userData.planes) p.renderOrder = n; }
 
-/* ── Colori per il dimming dei mesh non attivi ── */
-// MeshBasicMaterial moltiplica texture × color, quindi:
-//   color (1,1,1) = piena luminosità   |   color (0.3,0.3,0.3) = scurito al 30%
-const COLOR_FULL = new THREE.Color().setRGB(1.0, 1.0, 1.0, THREE.SRGBColorSpace);
-const COLOR_DIM  = new THREE.Color().setRGB(0.28, 0.28, 0.28, THREE.SRGBColorSpace);
+/* ── Dimming delle carte non attive ── */
+// Un unico piano nero semitrasparente sopra la griglia e sotto la carta attiva
+// (che sporge a z = ACTIVE_Z). Il blending avviene in sRGB, quindi opacità 0.72
+// equivale a moltiplicare i colori per 0.28.
+const DIM_OPACITY = 0.72;
+const DIM_Z       = 0.005;   // appena davanti alle carte a z=0, dietro a quella attiva
+const dimPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID_W, GRID_H),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthWrite: false })
+);
+dimPlane.position.set(OX + GRID_W / 2, OY - GRID_H / 2, DIM_Z);
+dimPlane.visible = false;   // acceso solo mentre è visibile (opacità > 0)
+grp.add(dimPlane);
 
 /* ══════════════════════════════════════════════════════════════
    Caricamento texture
@@ -1223,12 +1231,11 @@ function animate() {
 
   /* ── Dimming: attivo solo durante e dopo uno zoom ── */
   if (dimmingActive) {
-    let settled = true;
-    for (const card of cards) {
-      const tgt = (zoomedMesh && card !== zoomedMesh) ? COLOR_DIM : COLOR_FULL;
-      for (const p of card.userData.planes) p.material.color.lerp(tgt, 0.08);
-      if (Math.abs(card.userData.planes[0].material.color.r - tgt.r) > 0.002) settled = false;
-    }
+    const tgt = zoomedMesh ? DIM_OPACITY : 0;
+    const op  = lerp(dimPlane.material.opacity, tgt, 0.08);
+    const settled = Math.abs(op - tgt) < 0.002;
+    dimPlane.material.opacity = settled ? tgt : op;
+    dimPlane.visible = dimPlane.material.opacity > 0;
     if (settled) dimmingActive = false;
   }
 
