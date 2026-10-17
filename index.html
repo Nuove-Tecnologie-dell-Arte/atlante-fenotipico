@@ -465,8 +465,6 @@ const CFG = {
   MARQUEE_SPEED : 1.2,
 };
 
-const TOTAL = CFG.TOTAL_IMGS;  // immagini reali (celle oltre questo valore non vengono create)
-const TEST  = new URLSearchParams(location.search).has('test');
 
 // Rilevamento dispositivo mobile
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -601,28 +599,6 @@ function makePlaceholder() {
 }
 const phTex = makePlaceholder();
 
-// Texture test (modalità ?test) — mostra il numero file
-function makeTestTex(n) {
-  const w   = 160, h = Math.round(160 * CFG.IMG_H / CFG.IMG_W);
-  const cvs = document.createElement('canvas');
-  cvs.width = w; cvs.height = h;
-  const ctx = cvs.getContext('2d');
-  // Colore diverso per ogni soggetto; il retro (pari) leggermente più chiaro
-  const hue = ((n - 1) >> 1) / CFG.NUM_SUBJECTS * 320;
-  const lit = 11 + ((n % 2 === 0) ? 5 : 0);
-  ctx.fillStyle = `hsl(${hue},48%,${lit}%)`;
-  ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = `hsla(${hue},70%,55%,.35)`;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, w-2, h-2);
-  // Numero file grande al centro
-  ctx.fillStyle = `hsla(${hue},85%,72%,.8)`;
-  ctx.font = `bold ${Math.round(h * .3)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(String(n).padStart(3, '0'), w/2, h/2);
-  return new THREE.CanvasTexture(cvs);
-}
-
 const geo    = new THREE.PlaneGeometry(CFG.IMG_W, CFG.IMG_H);
 const grp    = new THREE.Group();
 const gridTiles = [];  // Contenitori delle copie della griglia
@@ -718,29 +694,6 @@ const texLoader  = new THREE.TextureLoader();
 const ldInfo     = document.getElementById('ld-info');
 const ldProgressRect = document.getElementById('progress-rect');
 let   loadedN    = 0;
-let   failedURLs = [];   // raccoglie i percorsi che non caricano
-
-// ── Texture placeholder per errore (tinta arancione, percorso visibile) ──
-function makeErrTex(url) {
-  const w = 160, h = Math.round(160 * CFG.IMG_H / CFG.IMG_W);
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#1a0203';
-  ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = 'rgba(245,5,8,.5)';
-  ctx.lineWidth = 2; ctx.strokeRect(1, 1, w-2, h-2);
-  ctx.fillStyle = 'rgba(245,5,8,.85)';
-  ctx.font = `bold ${Math.round(h*.18)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('404', w/2, h/2 - h*.12);
-  ctx.font = `${Math.round(h*.09)}px monospace`;
-  ctx.fillStyle = 'rgba(245,5,8,.55)';
-  // mostra solo il nome file, non tutto il path
-  ctx.fillText(url.split('/').pop(), w/2, h/2 + h*.14);
-  return new THREE.CanvasTexture(c);
-}
-
 function onTexDone(plane, tex, url) {
   if (tex) {
     // Disabilita mipmap per le miniature: risparmia ~33% VRAM (100MB → 100MB senza overhead)
@@ -754,66 +707,14 @@ function onTexDone(plane, tex, url) {
     if (!isMobile) renderer.initTexture(tex);
     plane.userData.thumbTex = tex;   // miniatura: resta in memoria, riusata al de-zoom
   } else {
-    failedURLs.push(url);
-    const errTex = makeErrTex(url);
-    plane.material.map = errTex;
-    plane.material.needsUpdate = true;
-    plane.userData.thumbTex = errTex;
+    console.warn('[AtlanteFen] Immagine non caricata:', url);   // resta il placeholder neutro
   }
   loadedN++;
   if (ldProgressRect) {
     ldProgressRect.setAttribute('width', (1000 * loadedN / LOAD_COUNT).toFixed(0));
   }
   ldInfo.textContent = loadedN + ' / ' + LOAD_COUNT;
-  if (loadedN >= LOAD_COUNT) setTimeout(onAllLoaded, 300);
-}
-
-function onAllLoaded() {
-  if (failedURLs.length === 0) {
-    hideLoading();
-    return;
-  }
-  // ── Mostra diagnostica ──────────────────────────────────────────
-  const pct  = Math.round(failedURLs.length / LOAD_COUNT * 100);
-  const ldEl = document.getElementById('loading');
-
-  // Barra diventa rossa se tutto fallisce, arancione se parziale
-  ldBar.style.background = failedURLs.length === LOAD_COUNT ? '#f50508' : '#ee15ef';
-
-  if (location.protocol === 'file:') {
-    ldInfo.innerHTML =
-      '<span style="color:#ee15ef">⚠ Aperto come file locale (file://)</span><br>' +
-      '<span style="color:rgba(234,251,255,.45);font-size:.55rem">' +
-      'Usa un server web locale: <strong style="color:rgba(234,251,255,.7)">npx http-server .</strong> oppure ' +
-      'VS Code → Live Server</span>';
-  } else {
-    ldInfo.innerHTML =
-      `<span style="color:#ee15ef">⚠ ${failedURLs.length} / ${TOTAL} immagini non trovate (${pct}%)</span>`;
-
-    // Mostra il percorso del primo file fallito
-    const hint = document.createElement('div');
-    hint.style.cssText =
-      'margin-top:.6rem;font-size:.52rem;color:rgba(245,5,8,.6);' +
-      'max-width:80vw;word-break:break-all;text-align:center;line-height:1.5';
-    hint.innerHTML =
-      `Percorso tentato:<br>` +
-      `<strong style="color:rgba(245,90,92,.85)">${failedURLs[0]}</strong><br>` +
-      `<span style="color:rgba(234,251,255,.3)">Verifica che la cartella <em>images/</em> ` +
-      `sia nella stessa directory di <em>index.html</em></span>`;
-    ldEl.appendChild(hint);
-  }
-
-  // Pulsante "continua comunque" (mostra i placeholder rossi)
-  const btn = document.createElement('button');
-  btn.textContent = 'Continua comunque →';
-  btn.style.cssText =
-    'margin-top:1.4rem;padding:.45rem 1.1rem;background:rgba(37,150,190,.1);' +
-    'border:1px solid rgba(37,150,190,.35);border-radius:2px;color:#2596be;' +
-    'font-size:.62rem;letter-spacing:.15em;text-transform:uppercase;cursor:pointer;';
-  btn.addEventListener('click', hideLoading);
-  ldEl.appendChild(btn);
-
-  console.warn('[AtlanteFen] Immagini non caricate:', failedURLs);
+  if (loadedN >= LOAD_COUNT) setTimeout(hideLoading, 300);
 }
 
 function hideLoading() {
@@ -849,30 +750,20 @@ function loadBatch(start) {
       url = thumbSrcN(p.userData.file);
     }
 
-    if (TEST) {
-      onTexDone(p, makeTestTex(p.userData.file || -1), url);
-    } else {
-      texLoader.load(
-        url,
-        (tex) => onTexDone(p, tex, url),
-        undefined,
-        ()    => onTexDone(p, null, url)
-      );
-    }
+    texLoader.load(
+      url,
+      (tex) => onTexDone(p, tex, url),
+      undefined,
+      ()    => onTexDone(p, null, url)
+    );
   }
-  if (end < planes.length) setTimeout(() => loadBatch(end), TEST ? 2 : CFG.BATCH_MS);
+  if (end < planes.length) setTimeout(() => loadBatch(end), CFG.BATCH_MS);
 }
 
 // Quante texture vengono caricate all'avvio:
 // fronti carte singole (113) + fronti pannelloni (4).
 // I retri carte singole sono on-demand; i retri pannelloni non vengono mai mostrati.
 const LOAD_COUNT = planes.filter(p => p.userData.side === 'front').length;
-
-// ── Rilevamento file:// prima ancora di iniziare ──────────────────────────
-if (location.protocol === 'file:') {
-  ldInfo.innerHTML =
-    '<span style="color:#ee15ef">⚠ Protocollo file:// — le immagini non caricheranno</span>';
-}
 
 loadBatch(0);
 
@@ -945,7 +836,7 @@ function fitZForMesh() {
 // La griglia mostra le miniature; il full-res 1920×960 (~7 MB) si carica solo
 // per la carta aperta (fronte + retro) e si libera quando torna in griglia.
 function loadPlaneFull(plane) {
-  if (TEST || plane.userData.fullTex || plane.userData.fullLoading) return;
+  if (plane.userData.fullTex || plane.userData.fullLoading) return;
   plane.userData.fullLoading = true;
   texLoader.load(
     imgSrcN(plane.userData.file),
