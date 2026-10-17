@@ -51,6 +51,8 @@ const CFG = {
   // Effetti
   FLOAT_AMP : 0.035,// ampiezza fluttuazione verticale
   FLOAT_SPD : 0.38, // Hz
+  FLOAT_EASE_S : 2,  // durata dell'easing in entrata/uscita (s)
+  FLOAT_IDLE_MS: 4000, // desktop: la fluttuazione si ferma dopo tanti ms senza input (su mobile non c'è)
   HOVER_SCL : 1.05, // scala hover
 
   // Marquee ("tapis roulant"): velocità di scorrimento orizzontale in unità mondo/sec.
@@ -296,9 +298,11 @@ function onTexDone(plane, tex, url) {
   } else {
     console.warn('[AtlanteFen] Immagine non caricata:', url);   // resta il placeholder neutro
   }
+  wake();
 }
 
 function hideLoading() {
+  wake();
   const el = document.getElementById('loading');
   el.classList.add('fade-out');
   document.body.classList.add('ready');           // fa entrare topbar + deck
@@ -306,8 +310,6 @@ function hideLoading() {
   // Intro pull-back
   camera.position.z = CFG.CAM_Z + 3;
   camTargetZ = CFG.CAM_Z;
-  // Mostra la legenda all'avvio con delay
-  setTimeout(() => { toggleLegend(true); }, 400);
 }
 
 // Carica all'avvio solo i fronti: 113 carte singole + 4 pannelloni.
@@ -415,6 +417,7 @@ function loadPlaneFull(plane) {
       plane.material.map = tex;
       plane.material.needsUpdate = true;
       renderer.initTexture(tex);
+      wake();
     },
     undefined,
     () => { plane.userData.fullLoading = false; }  // resta la miniatura
@@ -445,6 +448,7 @@ function loadBackThumb(card) {
         back.material.map = tex;
         back.material.needsUpdate = true;
       }
+      wake();
     },
     undefined,
     () => { back.userData.thumbLoading = false; }
@@ -1121,11 +1125,28 @@ function updateHover(cx, cy) {
 /* ══════════════════════════════════════════════════════════════
    Loop di animazione
    ══════════════════════════════════════════════════════════════ */
+// Il render si sospende quando la scena è ferma (nessun input e nessun valore che cambia)
+// e riparte con wake(): input dell'utente, texture caricate, resize.
+const IDLE_FRAMES = 5;   // frame consecutivi senza variazioni prima di sospendere
 let lastFrame = performance.now();
 const startTime = lastFrame;
+let lastActivity = lastFrame;
+let rafId = 0;
+let idleFrames = 0;
+let lastSig = '';
+let floatT = 0;   // 0 = ferma … 1 = ampiezza piena
+
+function wake() {
+  lastActivity = performance.now();
+  idleFrames = 0;
+  if (!rafId) {
+    lastFrame = lastActivity;   // niente dt gigante dopo la pausa
+    rafId = requestAnimationFrame(animate);
+  }
+}
 
 function animate() {
-  requestAnimationFrame(animate);
+  rafId = requestAnimationFrame(animate);
   const now = performance.now();
   const dt = Math.min((now - lastFrame) / 1000, 0.05);
   lastFrame = now;
@@ -1175,14 +1196,13 @@ function animate() {
 
 
   /* ── Fluttuazione verticale (solo normale; ferma in zoom e in marquee) ── */
-  const floatValue = Math.sin((now - startTime) / 1000 * Math.PI * 2 * CFG.FLOAT_SPD) * CFG.FLOAT_AMP;
-  
-  if (!zoomedMesh && !marqueeMoving) {
-    // Lerpa verso il valore attuale dell'oscillazione per una transizione fluida
-    grp.position.y = lerp(grp.position.y, floatValue, 0.1);
-  } else {
-    grp.position.y = lerp(grp.position.y, 0, 0.1); // ferma il float durante ease-out/stop
-  }
+  // Solo desktop e solo con input recente. L'ampiezza sale/scende con easing (floatT),
+  // così l'oscillazione si smorza fino a zero invece di fermarsi di colpo.
+  const floatOn = !isMobile && !zoomedMesh && !marqueeMoving && now - lastActivity < CFG.FLOAT_IDLE_MS;
+  const fStep = dt / CFG.FLOAT_EASE_S;
+  floatT = floatOn ? Math.min(1, floatT + fStep) : Math.max(0, floatT - fStep);
+  grp.position.y = Math.sin((now - startTime) / 1000 * Math.PI * 2 * CFG.FLOAT_SPD)
+                 * CFG.FLOAT_AMP * easeInOutQuad(floatT);
 
   /* ── Hover scale ── */
   hoverTargets.forEach((tgt, m) => {
@@ -1230,8 +1250,25 @@ function animate() {
   updateScrubber();   // allinea la manopola alla posizione orizzontale corrente
 
   renderer.render(scene, camera);
+
+  /* ── Sospensione: se nulla è cambiato per IDLE_FRAMES frame, ferma il loop ── */
+  const q = (v) => Math.round(v * 1e4);
+  const sig = [
+    q(camera.position.x), q(camera.position.y), q(camera.position.z),
+    q(grp.position.y), q(marqueeOffset),
+    zoomedMesh ? q(zoomedMesh.position.z) + ':' + q(zoomedMesh.rotation.y) : '-',
+    returningMesh ? q(returningMesh.position.z) + ':' + q(returningMesh.rotation.y) : '-',
+    hoverTargets.size, hoverZTargets.size, dimmingActive
+  ].join();
+  if (sig !== lastSig || dragging) { lastSig = sig; idleFrames = 0; }
+  else if (++idleFrames >= IDLE_FRAMES) { cancelAnimationFrame(rafId); rafId = 0; }
 }
 animate();
+
+// Qualsiasi input risveglia il loop (e conta come attività per la fluttuazione).
+for (const ev of ['pointermove', 'pointerdown', 'wheel', 'keydown', 'touchstart', 'touchmove', 'click', 'resize']) {
+  window.addEventListener(ev, wake, { capture: true, passive: true });
+}
 
 /* ══════════════════════════════════════════════════════════════
    Resize
