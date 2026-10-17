@@ -260,6 +260,11 @@ for (let i = 0; i < Math.min(CFG.NUM_SUBJECTS, availablePositions.length); i++) 
 
 // Helper: applica un'azione a entrambi i piani di una carta.
 function cardRenderOrder(card, n) { for (const p of card.userData.planes) p.renderOrder = n; }
+// Carta attiva: va nella coda trasparente con renderOrder > dimPlane, così viene sempre
+// disegnata sopra il velo nero anche quando, ruotando, metà carta passa dietro z = DIM_Z.
+function setActiveLayer(card, on) {
+  for (const p of card.userData.planes) { p.material.transparent = on; p.renderOrder = on ? 10 : 0; }
+}
 
 /* ── Dimming delle carte non attive ── */
 // Un unico piano nero semitrasparente sopra la griglia e sotto la carta attiva
@@ -269,8 +274,9 @@ const DIM_OPACITY = 0.72;
 const DIM_Z       = 0.005;   // appena davanti alle carte a z=0, dietro a quella attiva
 const dimPlane = new THREE.Mesh(
   new THREE.PlaneGeometry(GRID_W, GRID_H),
-  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthWrite: false })
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthWrite: false, depthTest: false })
 );
+dimPlane.renderOrder = 5;   // dopo le carte opache, prima della carta attiva
 dimPlane.position.set(OX + GRID_W / 2, OY - GRID_H / 2, DIM_Z);
 dimPlane.visible = false;   // acceso solo mentre è visibile (opacità > 0)
 grp.add(dimPlane);
@@ -486,6 +492,7 @@ function finishReturn(card) {
   card.position.z = 0;
   card.rotation.y = 0;
   card.userData.planes[1].visible = false;   // il retro torna nascosto
+  setActiveLayer(card, false);
   releaseFullRes(card);                      // libera la VRAM del full-res
   if (returningMesh === card) returningMesh = null;
 }
@@ -507,6 +514,7 @@ function zoomTo(mesh) {
   if (zoomedMesh && zoomedMesh !== mesh) { startReturn(zoomedMesh); }
 
   zoomedMesh = mesh;
+  setActiveLayer(mesh, true);
   mesh.userData.flip = 0;          // si apre sempre sul fronte (presentazione)
   if (!mesh.userData.isPannellone) mesh.userData.planes[1].visible = true;
   loadBackThumb(mesh);             // miniatura retro on-demand (se non ancora caricata)
